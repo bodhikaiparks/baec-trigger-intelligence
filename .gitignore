@@ -1,0 +1,22 @@
+# Secrets: never commit real keys. .env.example (placeholders only) is allowed.
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime databases are generated from seed data, never committed
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS and editors
+.DS_Store
+.vscode/
+.idea/
