@@ -5,8 +5,9 @@ generic serializer, reflection, duck typing, or class-name matching is used.
 No BAEC, provenance, staleness, or transition rule is evaluated here: values
 are only translated.
 
-5B implements the read-side output conversions and the wire-to-domain helpers
-for enums and timestamps. The preview-tool input conversions arrive in 5C.
+Read-side output conversions (5B) and the preview-tool input and output
+conversions (5C). Input conversion builds locked domain objects through
+their own constructors, so the domain's validation decides.
 """
 
 from __future__ import annotations
@@ -15,7 +16,13 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
-from baec_app.application import PersistedDormancyJudgment, SourceInteraction, TransitionHistoryEntry
+from baec_app.application import (
+    ClassificationPreview,
+    PersistedDormancyJudgment,
+    SourceInteraction,
+    TransitionHistoryEntry,
+)
+from baec_app.domain import enums
 from baec_app.domain.models import (
     Account,
     AiDerivedText,
@@ -28,24 +35,34 @@ from baec_app.domain.models import (
     NonEvaluationEvidence,
     StringencyExpression,
 )
+from baec_app.domain.state_machine import TransitionResult
 from baec_app.mcp.contracts import (
     AccountList,
     AccountView,
     AiDerivedTextView,
     AuthorizationView,
+    BaecCandidateIn,
     BaecCandidateView,
     BaecRecordList,
     BaecRecordView,
+    ClassificationPreviewView,
+    ClassificationReasonView,
+    CriterionAssessmentIn,
     CriterionAssessmentView,
     DormancyJudgmentList,
     DormancyJudgmentView,
+    EvaluationEvidenceIn,
+    EvidenceExcerptIn,
     EvidenceExcerptView,
     InteractionList,
     InteractionView,
+    NonEvaluationEvidenceIn,
     StateEvidenceView,
+    StringencyIn,
     StringencyView,
     TransitionHistoryEntryView,
     TransitionHistoryList,
+    TransitionPreviewView,
 )
 
 
@@ -76,6 +93,80 @@ def datetime_from_wire(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise AdapterTypeError("wire timestamps must be timezone-aware")
     return parsed
+
+
+def _optional_enum_from_wire(enum_class: type[Enum], value: str | None) -> Enum | None:
+    return None if value is None else enum_from_wire(enum_class, value)
+
+
+def _decimal_from_wire(value: str | None) -> Decimal | None:
+    return None if value is None else Decimal(value)
+
+
+# --- wire → domain objects (preview-tool inputs) ------------------------------------------
+
+
+def evidence_from_wire(excerpt: EvidenceExcerptIn) -> EvidenceExcerpt:
+    _require(excerpt, EvidenceExcerptIn)
+    return EvidenceExcerpt(excerpt.text, enum_from_wire(enums.ProvenanceCategory, excerpt.provenance), excerpt.source_id)
+
+
+def _assessment_from_wire(assessment: CriterionAssessmentIn) -> CriterionAssessment:
+    _require(assessment, CriterionAssessmentIn)
+    return CriterionAssessment(
+        enum_from_wire(enums.BaecCriterion, assessment.criterion),
+        enum_from_wire(enums.CriterionFinding, assessment.finding),
+        tuple(evidence_from_wire(e) for e in assessment.evidence),
+        assessment.rationale,
+    )
+
+
+def _stringency_from_wire(stringency: StringencyIn | None) -> StringencyExpression | None:
+    if stringency is None:
+        return None
+    _require(stringency, StringencyIn)
+    return StringencyExpression(
+        verbatim_text=stringency.verbatim_text,
+        comparator=_optional_enum_from_wire(enums.ThresholdComparator, stringency.comparator),
+        numeric_value=_decimal_from_wire(stringency.numeric_value),
+        unit=stringency.unit,
+        qualitative_term=stringency.qualitative_term,
+        recurrence_text=stringency.recurrence_text,
+        timing_text=stringency.timing_text,
+    )
+
+
+def candidate_from_wire(candidate: BaecCandidateIn) -> BaecCandidate:
+    _require(candidate, BaecCandidateIn)
+    return BaecCandidate(
+        account_id=candidate.account_id,
+        source_interaction_id=candidate.source_interaction_id,
+        source_excerpt=evidence_from_wire(candidate.source_excerpt),
+        assessments=tuple(_assessment_from_wire(a) for a in candidate.assessments),
+        articulation_origin=enum_from_wire(enums.ArticulationOrigin, candidate.articulation_origin),
+        elicitation_mode=enum_from_wire(enums.ElicitationMode, candidate.elicitation_mode),
+        buyer_exact_statement=candidate.buyer_exact_statement,
+        buyer_role=candidate.buyer_role,
+        stringency=_stringency_from_wire(candidate.stringency),
+    )
+
+
+def evaluation_evidence_from_wire(evidence: EvaluationEvidenceIn | None) -> EvaluationEvidence | None:
+    if evidence is None:
+        return None
+    _require(evidence, EvaluationEvidenceIn)
+    return EvaluationEvidence(evidence.account_id, evidence_from_wire(evidence.evidence), datetime_from_wire(evidence.observed_at))
+
+
+def non_evaluation_evidence_from_wire(evidence: NonEvaluationEvidenceIn | None) -> NonEvaluationEvidence | None:
+    if evidence is None:
+        return None
+    _require(evidence, NonEvaluationEvidenceIn)
+    return NonEvaluationEvidence(evidence.account_id, evidence_from_wire(evidence.evidence), datetime_from_wire(evidence.observed_at))
+
+
+def ground_from_wire(ground: str | None) -> enums.NoPlausiblePathGround | None:
+    return _optional_enum_from_wire(enums.NoPlausiblePathGround, ground)
 
 
 # --- domain → wire scalars ---------------------------------------------------------
@@ -258,3 +349,34 @@ def transition_entry_view(entry: TransitionHistoryEntry) -> TransitionHistoryEnt
 
 def transition_history_list(entries: tuple[TransitionHistoryEntry, ...]) -> TransitionHistoryList:
     return TransitionHistoryList(transitions=[transition_entry_view(e) for e in entries])
+
+
+# --- preview results → wire -----------------------------------------------------------
+
+
+def classification_preview_view(preview: ClassificationPreview) -> ClassificationPreviewView:
+    """The locked classifier's result, unchanged."""
+    _require(preview, ClassificationPreview)
+    result = preview.result
+    return ClassificationPreviewView(
+        classification=_enum(result.classification),
+        reasons=[ClassificationReasonView(kind=_enum(r.kind), criterion=_enum(r.criterion)) for r in result.reasons],
+        reason_text=result.reason_text,
+        confirmable=preview.confirmable,
+    )
+
+
+def transition_preview_view(result: TransitionResult) -> TransitionPreviewView:
+    """The locked state machine's preview, unchanged: every rejection kind in canonical order."""
+    _require(result, TransitionResult)
+    return TransitionPreviewView(
+        account_id=result.account_id,
+        from_state=_enum(result.from_state),
+        to_state=_enum(result.to_state),
+        allowed=result.allowed,
+        rejections=[_enum(k) for k in result.rejections],
+        rejection_text=result.rejection_text,
+        unresolved=[_enum(k) for k in result.unresolved],
+        ground=_enum(result.ground),
+        reason=result.reason,
+    )

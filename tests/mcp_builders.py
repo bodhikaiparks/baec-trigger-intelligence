@@ -15,6 +15,12 @@ from baec_app.mcp.composition import open_mcp_runtime
 from tests.persistence_builders import dump
 
 FIXED_RESOURCES = {"baec://accounts", "baec://baecs"}
+APPROVED_TOOLS = (
+    "preview_baec_classification",
+    "preview_move_to_conditionally_dormant",
+    "preview_move_to_active_opportunity",
+    "preview_move_to_no_plausible_path",
+)
 RESOURCE_TEMPLATES = {
     "baec://accounts/{account_id}",
     "baec://accounts/{account_id}/interactions",

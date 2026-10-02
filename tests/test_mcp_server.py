@@ -28,7 +28,7 @@ from baec_app.mcp import composition
 from baec_app.mcp.composition import McpRuntime, open_mcp_runtime
 from baec_app.mcp.server import build_mcp_server
 from tests.application_builders import FixedClock, SequentialIds
-from tests.mcp_builders import FIXED_RESOURCES, RESOURCE_TEMPLATES, Writer, connected, run, seeded_database
+from tests.mcp_builders import APPROVED_TOOLS, FIXED_RESOURCES, RESOURCE_TEMPLATES, Writer, connected, run, seeded_database
 
 
 @pytest.fixture
@@ -40,6 +40,8 @@ def path(tmp_path):
 
 
 def test_connection_capabilities_and_empty_tool_and_prompt_lists(path):
+    """Prompts stay empty. Since 5C the tool list is exactly the four read-only previews (name kept for ID continuity)."""
+
     async def main():
         async with connected(path) as (_, client):
             return (
@@ -53,7 +55,8 @@ def test_connection_capabilities_and_empty_tool_and_prompt_lists(path):
     version, name, capabilities, tools, prompts = run(main)
     assert version == "2026-07-28" and name == "baec-trigger-intelligence"
     assert capabilities.resources is not None
-    assert tools == [] and prompts == []
+    assert sorted(t.name for t in tools) == sorted(APPROVED_TOOLS) and prompts == []
+    assert capabilities.tools is not None
 
 
 def test_fixed_resources_and_templates_are_listed_separately_and_exactly(path):

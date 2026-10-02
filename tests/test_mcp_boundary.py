@@ -202,6 +202,58 @@ def registered(source: str, kind: str) -> list[str]:
     return values
 
 
+APPROVED_TOOL_NAMES = {
+    "preview_baec_classification",
+    "preview_move_to_conditionally_dormant",
+    "preview_move_to_active_opportunity",
+    "preview_move_to_no_plausible_path",
+}
+
+
+def _from_function_calls(tree: ast.AST) -> list[ast.Call]:
+    return [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _call_name(n) == "from_function"]
+
+
+def tool_names(source: str) -> list[str]:
+    """Literal names of tools built with Tool.from_function."""
+    names = []
+    for call in _from_function_calls(ast.parse(source)):
+        for keyword in call.keywords:
+            if keyword.arg == "name" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                names.append(keyword.value.value)
+    return names
+
+
+def m7_tool_functions_are_async(module: str, source: str) -> list[str]:
+    """Every function given to Tool.from_function is an async def named directly (no lambda or computed callable)."""
+    tree = ast.parse(source)
+    async_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)}
+    found = []
+    for call in _from_function_calls(tree):
+        target = call.args[0] if call.args else None
+        if not isinstance(target, ast.Name) or target.id not in async_names:
+            found.append(f"{module}:{call.lineno} tool function is not a directly named async def")
+    return found
+
+
+def m8_literal_tool_registration(module: str, source: str) -> list[str]:
+    """Tool names are literal, and tools are not built inside loops or comprehensions."""
+    tree = ast.parse(source)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    found = []
+    for call in _from_function_calls(tree):
+        names = [k for k in call.keywords if k.arg == "name"]
+        if len(names) != 1 or not (isinstance(names[0].value, ast.Constant) and isinstance(names[0].value.value, str)):
+            found.append(f"{module}:{call.lineno} tool name is not a literal")
+        ancestor = parents.get(call)
+        while ancestor is not None:
+            if isinstance(ancestor, (ast.For, ast.AsyncFor, ast.While, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                found.append(f"{module}:{call.lineno} builds a tool inside a loop")
+                break
+            ancestor = parents.get(ancestor)
+    return found
+
+
 RULES = {
     "M1 no data layer": m1_no_data_layer,
     "M2 application package API only": m2_application_package_api_only,
@@ -211,6 +263,8 @@ RULES = {
     "M6 no forbidden calls": m6_no_forbidden_calls,
     "M7 async handlers, no offloading": m7_async_handlers_and_no_offloading,
     "M8 literal static registration": m8_literal_static_registration,
+    "M7 tool functions are async": m7_tool_functions_are_async,
+    "M8 literal tool registration": m8_literal_tool_registration,
 }
 
 
@@ -237,6 +291,16 @@ def test_m9_exactly_the_eight_resources_and_no_tools_or_prompts_are_registered()
         prompts += registered(source, "prompt")
     assert sorted(resources) == sorted(APPROVED_RESOURCE_URIS) and len(resources) == 8
     assert tools == [] and prompts == []
+
+
+def test_m9_exactly_the_four_approved_tools_are_built_and_nothing_else_registers_tools():
+    names = []
+    for module, source in mcp_modules():
+        names += tool_names(source)
+        assert registered(source, "tool") == [], module  # no decorator-registered tools
+    assert sorted(names) == sorted(APPROVED_TOOL_NAMES) and len(names) == 4
+    tools_source = (MCP_ROOT / "tools.py").read_text(encoding="utf-8")
+    assert len(_from_function_calls(ast.parse(tools_source))) == 4
 
 
 def test_every_registered_handler_is_async_and_holds_no_thread_offloading():
@@ -310,6 +374,26 @@ VIOLATIONS = {
         m8_literal_static_registration,
     ),
     "M8 getattr dispatch": ("baec_app.mcp.resources", "handler = getattr(facade.reads, name)", m8_literal_static_registration),
+    "M7 sync tool function": (
+        "baec_app.mcp.tools",
+        "def preview(x):\n    return x\nTool.from_function(preview, name='preview_x')",
+        m7_tool_functions_are_async,
+    ),
+    "M7 lambda tool function": ("baec_app.mcp.tools", "Tool.from_function(lambda x: x, name='preview_x')", m7_tool_functions_are_async),
+    "M7 computed tool function": ("baec_app.mcp.tools", "Tool.from_function(handlers[name], name='preview_x')", m7_tool_functions_are_async),
+    "M8 computed tool name": (
+        "baec_app.mcp.tools",
+        "async def p(x):\n    return x\nTool.from_function(p, name=stored_text)",
+        m8_literal_tool_registration,
+    ),
+    "M8 tool built in a loop": (
+        "baec_app.mcp.tools",
+        "async def p(x):\n    return x\ntools = [Tool.from_function(p, name='preview_x') for _ in range(2)]",
+        m8_literal_tool_registration,
+    ),
+    "M8 tool name missing": ("baec_app.mcp.tools", "async def p(x):\n    return x\nTool.from_function(p)", m8_literal_tool_registration),
+    "M6 propose from a tool": ("baec_app.mcp.tools", "facade.propose_move_to_active_opportunity(a, evaluation_evidence=e)", m6_no_forbidden_calls),
+    "M3 proposal type in tools": ("baec_app.mcp.tools", "from baec_app.application import MoveToActiveProposal", m3_no_command_side_names),
 }
 
 
@@ -338,6 +422,16 @@ ALLOWED = {
     "M6 reads": ("baec_app.mcp.resources", "facade.reads.list_accounts()", m6_no_forbidden_calls),
     "M7 async handler": ("baec_app.mcp.resources", "@server.resource('baec://x')\nasync def x():\n    return ''", m7_async_handlers_and_no_offloading),
     "M8 literal registration": ("baec_app.mcp.resources", "@server.resource('baec://x')\nasync def x():\n    return ''", m8_literal_static_registration),
+    "M7 async tool function": (
+        "baec_app.mcp.tools",
+        "async def preview(x):\n    return x\nTool.from_function(preview, name='preview_x')",
+        m7_tool_functions_are_async,
+    ),
+    "M8 literal tool name": (
+        "baec_app.mcp.tools",
+        "async def p(x):\n    return x\nt = Tool.from_function(p, name='preview_x')",
+        m8_literal_tool_registration,
+    ),
 }
 
 

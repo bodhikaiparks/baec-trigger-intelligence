@@ -1,7 +1,8 @@
 """Phase 5B: checks against the exact installed MCP SDK (design checkpoints).
 
-These record how mcp 2.2.0 behaves with the approved Option A contracts. They
-use a small test-only server; the production 5B server registers no tools.
+These record how mcp 2.2.0 behaves with the approved Option A contracts. Most
+use a small test-only probe server; the production preview tools (5C) are
+checked by the last test here and in test_mcp_tools.py.
 """
 
 import importlib.metadata
@@ -116,14 +117,40 @@ def test_schema_invalid_input_is_refused_and_never_reaches_the_handler(arguments
     assert len(reached) == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="OPEN 5C CHECKPOINT: mcp 2.2.0 returns Pydantic's full validation text, including the rejected "
-    "input_value, for SDK-level tool argument errors. The approved design forbids exposing raw rejected values. "
-    "Not accepted; must be resolved or escalated in 5C.",
-)
-def test_sdk_level_argument_errors_do_not_expose_rejected_values():
+def test_the_default_sdk_argument_path_echoes_rejected_values():
+    """This test characterizes the default validation-error rendering of the pinned MCP 2.2.0 SDK.
+    It documents why the production tools install closed argument models with hide_input_in_errors=True.
+    The leaking behavior is not accepted production behavior. A behavior change after an SDK upgrade
+    requires review.
+
+    It runs on a probe-only server. Production code must not depend on this default, and the production
+    regression (the next test) must not be weakened if this default changes."""
     secret = "REJECTED-VALUE-SHOULD-NOT-ECHO"
-    result = _call(_with(("account_id",), 12345) | {"approved": secret})
+    result = _call(_with(("evaluation_evidence", "observed_at"), secret))
     text = " ".join(getattr(block, "text", "") for block in result.content)
-    assert secret not in text and "input_value" not in text
+    assert result.is_error and secret in text and "input_value" in text
+
+
+def test_sdk_level_argument_errors_do_not_expose_rejected_values(tmp_path):
+    """Resolved in 5C: the production tools' closed argument models (hide_input_in_errors=True) keep the
+    SDK's normal validation and ToolError path but never echo a rejected value."""
+    from tests.mcp_builders import connected, seeded_database
+
+    secret = "REJECTED-VALUE-SHOULD-NOT-ECHO"
+    path = seeded_database(tmp_path)
+    attempts = [
+        {"account_id": secret + "/", "evaluation_evidence": None},
+        {"account_id": "ACC-SUMMIT", "evaluation_evidence": None, "approved": secret},
+        {"account_id": 12345, "evaluation_evidence": None},
+        {"account_id": "ACC-SUMMIT", "evaluation_evidence": {"account_id": "ACC-SUMMIT", "evidence": {"text": "x", "provenance": secret, "source_id": "INT-SUMMIT-001"}, "observed_at": secret}},
+    ]
+
+    async def main():
+        async with connected(path) as (_, client):
+            return [await client.call_tool("preview_move_to_active_opportunity", a) for a in attempts]
+
+    for result in run(main):
+        text = " ".join(getattr(block, "text", "") for block in result.content)
+        assert result.is_error
+        assert secret not in text and "input_value" not in text and "12345" not in text
+        assert "[type=" in text  # the category is still reported
