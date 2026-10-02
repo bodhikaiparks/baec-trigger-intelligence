@@ -64,6 +64,7 @@ def test_append_only_triggers_cover_exactly_the_approved_tables(connection):
         [f"{table}_no_{op}" for table in APPEND_ONLY_TABLES for op in ("update", "delete")]
         + [f"{table}_no_replace" for table in REPLACE_GUARDED_KEYS]
         + ["baec_records_protected_no_update", "baec_records_no_delete"]
+        + ["interaction_evidence_verbatim"]
     )
     assert triggers == expected
     assert len(APPEND_ONLY_TABLES) == 10
@@ -119,7 +120,7 @@ def test_strict_tables_refuse_a_value_of_the_wrong_storage_type(connection):
 
 
 def test_schema_version_is_set_and_a_mismatch_is_refused(connection):
-    assert schema_version(connection) == database.SCHEMA_VERSION == 3
+    assert schema_version(connection) == database.SCHEMA_VERSION == 4
     require_current_schema(connection)
     connection.execute("PRAGMA user_version = 99")
     with pytest.raises(DatabaseVersionError):
@@ -201,12 +202,12 @@ def test_working_copy_is_complete_independent_and_writable(connection):
     make_read_only(connection)
     copy = create_working_copy(connection)
     try:
-        assert schema_version(copy) == 3
+        assert schema_version(copy) == 4
         assert copy.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         copy.execute("INSERT INTO accounts (account_id, name) VALUES ('B', 'Synthetic')")
         assert copy.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
         triggers = copy.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'").fetchone()[0]
-        assert triggers == 33
+        assert triggers == 34
     finally:
         copy.close()

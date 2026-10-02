@@ -14,7 +14,8 @@ Phase numbers are implementation-planning labels for this software. They are not
 | Gate 1 / Phase 1 | Deterministic domain correctness | `gate-1-domain-correctness` | `b4deb78` | Complete |
 | Phase 2 | — | none | none | Not materialized (see §3) |
 | Phase 3 | Persistence and synthetic data | `phase-3-persistence` | `4063c23` | Complete |
-| Phase 3 hardening | RC-33 schema guards | `phase-3-persistence-hardening` | the tagged commit | Complete |
+| Phase 3 hardening | RC-33 schema guards | `phase-3-persistence-hardening` | `3e68030` | Complete |
+| Phase 3 hardening | Evidence fidelity | `phase-3-evidence-fidelity-hardening` | the tagged commit | Complete |
 | Phase 4 | Application & Human Authorization Boundary | none | none | Planned; design not yet approved |
 
 Existing tags and commits are not renamed, renumbered, moved, or rewritten.
@@ -62,6 +63,14 @@ Tag `phase-3-persistence-hardening`, after the `phase-3-persistence` tag. Not a 
 - Rows in append-only tables could be rewritten with SQLite `REPLACE`, which deletes and re-inserts a row without firing DELETE triggers.
 
 Schema version becomes 3. Version 2 databases are refused and must be rebuilt from the seed files. Tests: 1548 passing.
+
+### Phase 3 evidence-fidelity hardening
+
+Tag `phase-3-evidence-fidelity-hardening`, after `phase-3-persistence-hardening`. Not a new phase. It closes a gap found while designing Phase 4: stored evidence text was never checked against the interaction it cites, so text that appears nowhere in an interaction could be stored as evidence from it, including evidence used to move an account to Active Opportunity.
+
+Stored buyer-fact and seller-observation evidence text must now occur verbatim in the text of the interaction it cites. This is an implementation-level evidence-fidelity constraint for this software, enforced on repository save, on repository load, and by a schema trigger. It is not a research claim.
+
+Schema version becomes 4. Version 3 databases are refused and must be rebuilt from the seed files. Tests: 1658 passing.
 
 How Phase 3 and its hardening map to the Research Contract is recorded in `docs/PHASE3_PERSISTENCE_TRACEABILITY.md`.
 

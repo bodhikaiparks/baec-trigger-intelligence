@@ -41,6 +41,7 @@ EXPECTED_TRIGGERS = sorted(
     [f"{table}_no_{op}" for table in APPEND_ONLY_TABLES for op in ("update", "delete")]
     + [f"{table}_no_replace" for table in REPLACE_GUARDED_KEYS]
     + ["baec_records_protected_no_update", "baec_records_no_delete"]
+    + ["interaction_evidence_verbatim"]
 )
 
 
@@ -268,7 +269,7 @@ def test_rc33_guards_are_present_in_working_copies_and_the_canonical_seed():
         try:
             assert _trigger_names(canonical) == EXPECTED_TRIGGERS
             assert _trigger_names(working) == EXPECTED_TRIGGERS
-            assert len(EXPECTED_TRIGGERS) == 33
+            assert len(EXPECTED_TRIGGERS) == 34
             row = working.execute("SELECT * FROM interactions ORDER BY rowid").fetchone()
             refused(
                 working,

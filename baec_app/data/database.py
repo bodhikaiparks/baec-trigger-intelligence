@@ -34,7 +34,9 @@ from baec_app.domain.enums import (
 # Version 2 added composite keys binding a transition's BAEC to its account
 # and its judgment to that BAEC. Version 3 added the RC-33 guards: protected
 # baec_records columns, no baec_records deletes, and no replacing stored rows.
-SCHEMA_VERSION = 3
+# Version 4 added evidence fidelity: interaction evidence text must occur
+# verbatim in the text of the interaction it cites.
+SCHEMA_VERSION = 4
 MINIMUM_SQLITE_VERSION = (3, 37, 0)  # first version with STRICT tables
 
 
@@ -338,6 +340,22 @@ def _schema_statements() -> list[str]:
         SELECT RAISE(ABORT, '{table} rows cannot be replaced');
     END"""
         )
+    # Evidence fidelity (implementation constraint): stored buyer-fact and
+    # seller-observation text must be an exact, case-sensitive substring of
+    # the cited interaction. Fires when the interaction is missing too.
+    statements.append(
+        """
+    CREATE TRIGGER interaction_evidence_verbatim
+    BEFORE INSERT ON interaction_evidence
+    WHEN NEW.text = ''
+        OR NOT COALESCE(
+            instr((SELECT text FROM interactions WHERE interaction_id = NEW.interaction_id), NEW.text) > 0,
+            0
+        )
+    BEGIN
+        SELECT RAISE(ABORT, 'interaction_evidence text must occur verbatim in its interaction');
+    END"""
+    )
     statements.append(
         f"""
     CREATE TRIGGER baec_records_protected_no_update

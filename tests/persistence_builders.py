@@ -34,7 +34,7 @@ LATER = datetime(2026, 2, 1, 9, 30, tzinfo=timezone.utc)
 
 # Interaction texts contain the excerpt texts used by tests/builders.py.
 INTERACTION_TEXTS = {
-    "INT-1": "Buyer: " + HARBOR_QUOTE,
+    "INT-1": "Buyer: " + HARBOR_QUOTE + "\nRep note: buyer tied it to renewal.\nRep note: pricing at renewal.",
     "INT-2": "Buyer: We have opened a formal supplier review.",
     "INT-3": "Buyer: We closed the review and are staying put.",
 }

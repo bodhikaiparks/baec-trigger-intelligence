@@ -14,6 +14,8 @@ Rules this module follows:
 * Every mutation is one immediate write transaction that rolls back fully
   on any error.
 * The repository never reads the clock; timestamps are supplied by callers.
+* Evidence fidelity (implementation constraint): stored evidence text must
+  occur verbatim in the text of the interaction it cites, on save and on load.
 
 HumanAuthorization rows are records of a domain requirement. Storing one is
 not proof that a human acted; later application layers must establish that.
@@ -268,7 +270,11 @@ class Repository:
             raise RepositoryVerificationError(
                 f"{excerpt.provenance.value} evidence cannot be stored as interaction evidence"
             )
-        self._require_interaction_row(excerpt.source_id)
+        interaction = self._require_interaction_row(excerpt.source_id)
+        if excerpt.text not in interaction[3]:
+            raise RepositoryVerificationError(
+                f"evidence text does not occur verbatim in interaction {excerpt.source_id!r}"
+            )
         key = (excerpt.source_id, excerpt.provenance.value, excerpt.text)
         row = self._db.execute(
             "SELECT evidence_id FROM interaction_evidence "
@@ -290,6 +296,11 @@ class Repository:
         ).fetchone()
         if row is None:
             raise ValueError(f"evidence row {evidence_id} is missing")
+        interaction = self._interaction_row(row[2])
+        if interaction is None:
+            raise ValueError(f"evidence row {evidence_id} cites a missing interaction")
+        if not isinstance(row[0], str) or row[0] not in interaction[3]:
+            raise ValueError(f"evidence row {evidence_id} does not occur verbatim in its interaction")
         return EvidenceExcerpt(row[0], ProvenanceCategory(row[1]), row[2])
 
     # --- authorizations -------------------------------------------------------

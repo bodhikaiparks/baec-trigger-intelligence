@@ -1,7 +1,7 @@
 # Phase 3 Persistence Traceability
 
 **Project:** BAEC Trigger Intelligence
-**Checkpoints:** `phase-3-persistence` (commit `4063c23`) and `phase-3-persistence-hardening`
+**Checkpoints:** `phase-3-persistence` (commit `4063c23`), `phase-3-persistence-hardening` (commit `3e68030`), and `phase-3-evidence-fidelity-hardening`
 **Status:** Addendum to `docs/RESEARCH_CONTRACT.md`. Records how the Phase 3 persistence layer carries existing Research Contract rules into storage.
 
 This addendum adds no rules and changes none. The Research Contract stays the research authority, and the manuscript overrides it. If this addendum disagrees with the contract, the contract wins and this addendum must be corrected.
@@ -23,11 +23,12 @@ From `baec_app/data/repository.py` and `database.py`:
 - Every load goes back through the locked domain constructors. Corrupt or contradictory stored data raises `PersistenceIntegrityError`. Nothing partial or repaired is returned.
 - Every write is one immediate transaction that rolls back fully on any error.
 - The repository never reads the clock. Callers supply timestamps.
+- Stored evidence text must occur verbatim in the text of the interaction it cites, on save and on load (evidence fidelity; see §3).
 - STRICT tables, CHECK constraints, foreign keys, and triggers are a backstop. The domain constructors remain the authority on what stored data means. Triggers are not a security boundary: anyone who can write the database file can remove them.
 
 ## 3. Rule-by-rule traceability
 
-Paths are relative to the repository root. Tests marked "seed" run on the synthetic demo database. Tests in `tests/test_rc33_schema_guards.py` were added in the hardening commit. All other tests listed here exist at the `phase-3-persistence` tag.
+Paths are relative to the repository root. Tests marked "seed" run on the synthetic demo database. Tests in `tests/test_rc33_schema_guards.py` were added in the RC-33 hardening commit, and tests in `tests/test_evidence_fidelity.py` in the evidence-fidelity hardening commit. All other tests listed here exist at the `phase-3-persistence` tag.
 
 ### RC-13. Classification rule (IMPLEMENTATION of RC-02 and RC-10)
 
@@ -102,7 +103,7 @@ Not in Phase 3: there is no storage for `EXTERNAL_EVIDENCE` (signals) or for `AI
 | Ten tables are append-only: triggers refuse UPDATE and DELETE. These are `interactions`, `interaction_evidence`, `human_authorizations`, `criterion_assessments`, `criterion_evidence`, `stringency_expressions`, `dormancy_judgments`, `evaluation_evidence`, `non_evaluation_evidence`, and `account_state_transitions`. | `database.py` (`APPEND_ONLY_TABLES`) | `tests/test_database.py::test_append_only_triggers_cover_exactly_the_approved_tables`; `tests/test_repository_integrity.py::test_rc33_append_only_tables_refuse_update_and_delete` |
 | *(hardening)* Those ten tables and `baec_records` refuse any insert that would replace a stored row through any unique key. This closes `REPLACE`, `INSERT OR REPLACE`, UPSERT, and second-key replacement. | `database.py` (`REPLACE_GUARDED_KEYS`, `<table>_no_replace`) | `tests/test_rc33_schema_guards.py::test_rc33_stored_rows_cannot_be_replaced`, `::test_rc33_replace_through_a_secondary_unique_key_is_refused`, `::test_rc33_interaction_without_evidence_cannot_be_replaced`, `::test_rc33_upsert_cannot_change_a_protected_baec_record_column`, `::test_rc33_replace_guards_cover_every_unique_key` |
 | *(hardening)* In `baec_records`, every source, provenance, decision, and AI-derived column is protected from UPDATE, including no-op updates. Rows cannot be deleted. `staleness_status` is the only mutable column. | `database.py` (`BAEC_RECORD_PROTECTED_COLUMNS`, `BAEC_RECORD_MUTABLE_COLUMNS`, `baec_records_protected_no_update`, `baec_records_no_delete`) | `tests/test_rc33_schema_guards.py::test_rc33_baec_record_columns_are_partitioned_into_protected_and_mutable`, `::test_rc33_raw_update_of_a_protected_baec_record_column_is_refused`, `::test_rc33_reported_gap_buyer_statement_and_capture_time_cannot_be_rewritten`, `::test_rc33_baec_record_rows_cannot_be_deleted` |
-| *(hardening)* Guards are present in working copies and the canonical seed. Version 2 databases, which lack them, are refused. | `database.py` (`SCHEMA_VERSION = 3`) | `tests/test_rc33_schema_guards.py::test_rc33_guards_are_present_in_working_copies_and_the_canonical_seed`, `::test_database_created_with_schema_version_2_is_refused`; `tests/test_database.py::test_working_copy_is_complete_independent_and_writable` |
+| *(hardening)* Guards are present in working copies and the canonical seed. Version 2 databases, which lack them, are refused. | `database.py` (schema version 3 at that commit; now 4) | `tests/test_rc33_schema_guards.py::test_rc33_guards_are_present_in_working_copies_and_the_canonical_seed`, `::test_database_created_with_schema_version_2_is_refused`; `tests/test_database.py::test_working_copy_is_complete_independent_and_writable` |
 | Records round-trip field-for-field. | `repository.py` | `tests/test_repository_roundtrip.py::test_rc33_baec_record_round_trip` |
 | Tampering with guards removed that contradicts the domain rules fails closed on load. Examples: a buyer statement that is no longer verbatim in its excerpt, altered evidence text, a moved interaction. | `repository.py` (`_rehydrate_record`) | `tests/test_repository_integrity.py::test_corrupted_confirmed_record_fails_closed` (cases "buyer statement rewritten", "evidence text altered so the quote is no longer verbatim", "evidence moved to another interaction") |
 | Account state can change only through a saved transition, and the stored state must match an unbroken history chain. | `repository.py` (`add_account`, `_update_account_state`, `_verify_state_matches_history`) | `tests/test_repository_roundtrip.py::test_rc21_accounts_can_only_be_inserted_unclassified`; `tests/test_transition_persistence.py::test_history_is_appended_in_order_and_never_overwritten`, `::test_account_state_overwritten_outside_a_transition_fails_closed`, `::test_state_set_with_no_history_at_all_fails_closed`, `::test_stale_state_rolls_back_the_whole_transition` |
@@ -113,11 +114,27 @@ Not in Phase 3: there is no storage for `EXTERNAL_EVIDENCE` (signals) or for `AI
 - `baec_records` had no SQL-level protection. A direct change that stayed consistent with the domain rules loaded without error. Examples: setting `buyer_exact_statement` to `NULL`, or changing `captured_at` to another valid timestamp.
 - Append-only tables could be rewritten with `REPLACE`, which SQLite runs as delete-then-insert without firing DELETE triggers. This worked even with foreign keys on, for rows that no other row referenced yet.
 
+**At the `phase-3-persistence-hardening` tag** (closed by the evidence-fidelity hardening): stored evidence text was never checked against the interaction it cites. Text that appeared nowhere in an interaction could be stored as evidence from it. On the seed database this was enough to move an account to Active Opportunity.
+
 **Still not enforced after hardening:**
 
 - The guards are not a security boundary. Anyone who can write the database file can drop the triggers.
 - Auditable amendments are not implemented, so there is no correction path for any protected field.
 - `accounts` and `schema_meta` have no triggers. `accounts.state` is protected by the transition-history check. `accounts.name`, and deleting an account with foreign keys off, are not guarded.
+
+### Evidence fidelity (IMPLEMENTATION constraint)
+
+Stored `BUYER_FACT` and `SELLER_OBSERVATION` evidence text must occur verbatim (an exact, case-sensitive substring, with no whitespace or Unicode normalization) in the text of the interaction named by the excerpt's `source_id`. This covers BAEC source excerpts, criterion evidence (C1–C4), `EvaluationEvidence`, and `NonEvaluationEvidence`, all of which are stored in `interaction_evidence`. Future `EXTERNAL_EVIDENCE` is out of scope and will have a separate storage path.
+
+This is an implementation-level evidence-fidelity constraint chosen for this software. Neither RC-33 nor the manuscript requires that seller observations be verbatim substrings of a stored interaction. The constraint supports provenance integrity under RC-32 and RC-33, and it operationally protects the boundary between evidence and signals: evidence used to change account state must be traceable to the stored text it claims to quote. It is not a research finding. As a consequence, in this software a seller observation must be recorded as part of an interaction's text before it can be cited as evidence.
+
+| Mechanism | Code | Tests |
+|---|---|---|
+| Save: a non-verbatim excerpt is refused with `RepositoryVerificationError`, and the whole write rolls back. Covers every evidence path. | `repository.py` (`_evidence_id`) | `tests/test_evidence_fidelity.py::test_exact_substring_is_accepted`, `::test_non_verbatim_evidence_is_rejected_on_every_path`, `::test_curly_apostrophe_is_not_the_stored_straight_apostrophe`, `::test_fabricated_candidate_source_excerpt_is_rejected_for_nonconfirmed_saves_too`, `::test_text_from_another_interaction_does_not_authorize_citing_the_wrong_one`, `::test_the_same_text_may_be_cited_from_each_interaction_that_contains_it` |
+| Load: stored evidence that is not verbatim in its interaction, or that cites a missing interaction, fails closed with `PersistenceIntegrityError`, even when every database guard was bypassed. | `repository.py` (`_load_excerpt`) | `tests/test_evidence_fidelity.py::test_bypassed_schema_still_fails_closed_on_load_for_baec_evidence`, `::test_bypassed_schema_still_fails_closed_on_load_for_state_evidence`, `::test_interaction_text_rewritten_under_its_evidence_fails_closed` |
+| Schema: the `interaction_evidence_verbatim` BEFORE INSERT trigger refuses non-verbatim or empty text, and text citing a missing interaction, even with foreign keys and CHECK constraints off. SQLite `instr` and Python `in` agree on what counts as verbatim. | `database.py` (`interaction_evidence_verbatim`) | `tests/test_evidence_fidelity.py::test_raw_sql_fabricated_evidence_insert_is_refused_by_the_schema`, `::test_raw_sql_evidence_for_a_missing_interaction_is_refused_even_with_foreign_keys_off`, `::test_raw_sql_verbatim_evidence_insert_is_accepted`, `::test_sql_and_python_agree_on_verbatim_matching`, `::test_provenance_check_still_refuses_non_interaction_evidence_with_verbatim_text` |
+| Fabricated state evidence cannot change account state. | `repository.py` (`_evidence_id`, reached through the transition writes) | `tests/test_evidence_fidelity.py::test_fabricated_evaluation_evidence_cannot_activate`, `::test_fabricated_non_evaluation_evidence_cannot_leave_active` |
+| Version 3 databases, which lack the trigger, are refused. | `database.py` (`SCHEMA_VERSION = 4`) | `tests/test_evidence_fidelity.py::test_database_created_with_schema_version_3_is_refused`; `tests/test_database.py::test_schema_version_is_set_and_a_mismatch_is_refused` |
 
 ### Other rules touched by Phase 3
 
@@ -125,7 +142,7 @@ Not in Phase 3: there is no storage for `EXTERNAL_EVIDENCE` (signals) or for `AI
 |---|---|---|
 | RC-20, RC-21 | Accounts are inserted unclassified (`None`). The schema allows exactly the three states. Every allowed move saves one history row. | `tests/test_repository_roundtrip.py::test_rc21_accounts_can_only_be_inserted_unclassified`; `tests/test_database.py::test_enum_value_lists_in_the_schema_match_the_enum_members`; `tests/test_transition_persistence.py::test_rc20_every_allowed_move_is_persisted_with_one_history_row`; seed: `tests/test_seed.py::test_rc20_three_demo_accounts_end_in_their_expected_states`, `::test_rc21_every_seed_state_came_from_a_real_transition_out_of_unclassified` |
 | RC-23 | A No Plausible Path decision stores its ground, reason, and basis interaction. | `tests/test_transition_persistence.py::test_rc20_no_plausible_path_entry_records_ground_reason_and_basis_interaction`, `::test_every_no_plausible_path_ground_round_trips`; seed: `tests/test_seed.py::test_rc23_summit_has_no_baec_and_a_structured_no_plausible_path_decision` |
-| RC-27 | No repository method accepts a `TransitionResult` or a signal. Entry into Active Opportunity stores its buyer-evaluation evidence. | `tests/test_transition_persistence.py::test_rc27_no_persistence_function_accepts_a_transition_result_or_a_signal`, `::test_rc27_active_entry_records_the_evaluation_evidence`; seed: `tests/test_seed.py::test_rc27_meridian_is_active_because_of_buyer_evaluation_evidence` |
+| RC-27 | No repository method accepts a `TransitionResult` or a signal. Entry into Active Opportunity stores its buyer-evaluation evidence, which must occur verbatim in the interaction it cites (evidence fidelity, above). | `tests/test_transition_persistence.py::test_rc27_no_persistence_function_accepts_a_transition_result_or_a_signal`, `::test_rc27_active_entry_records_the_evaluation_evidence`; `tests/test_evidence_fidelity.py::test_fabricated_evaluation_evidence_cannot_activate`; seed: `tests/test_seed.py::test_rc27_meridian_is_active_because_of_buyer_evaluation_evidence` |
 | RC-34 | Leaving Active Opportunity stores the non-evaluation evidence separately. | `tests/test_transition_persistence.py::test_rc34_leaving_active_stores_the_non_evaluation_evidence_separately` |
 
 ## 4. Still deferred after Phase 3
@@ -142,6 +159,7 @@ RC-15, RC-19, RC-26, RC-28, and RC-30 remain later-phase rules, as Research Cont
 | Checkpoint | Result |
 |---|---|
 | `phase-3-persistence` (`4063c23`) | 1403 passed (Python 3.14.3, SQLite 3.50.4, 2026-10-01) |
-| `phase-3-persistence-hardening` | 1548 passed (Python 3.14.3, SQLite 3.50.4, 2026-10-01) |
+| `phase-3-persistence-hardening` (`3e68030`) | 1548 passed (Python 3.14.3, SQLite 3.50.4, 2026-10-01) |
+| `phase-3-evidence-fidelity-hardening` | 1658 passed (Python 3.14.3, SQLite 3.50.4, 2026-10-01) |
 
 These are software tests on synthetic data. They do not validate the theory.
