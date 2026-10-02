@@ -1,8 +1,8 @@
-# Phase 6C Live Evaluation (C-C1: harness and corpus)
+# Phase 6C Live Evaluation
 
 **Project:** BAEC Trigger Intelligence
 **Baseline:** Phase 6C-B, commit `f5875bc`.
-**Status:** **No live execution has occurred.** No Anthropic request has been made. The harness, corpus, and gates are in place for review.
+**Status:** **Live evaluation completed** (Phase 6C-C2B and 6C-C2C), executed against commit `09dba151969d190937ea5fff61032e8b45613f88`. Both authorized runs have been made, one per model. The results are recorded in §9.
 
 These evaluations measure the implementation and model behavior on synthetic cases. They do not validate BAEC theory, show prospective validity, or produce a BAEC quality score.
 
@@ -30,7 +30,7 @@ A live run happens only if **every** condition holds:
 
 If any condition fails, the test skips with a generic message that contains no environment value.
 
-## 3. Exact commands (not yet run)
+## 3. Exact commands (each run once; see §9)
 
 Run from the repository root with the project environment active, one model per invocation:
 
@@ -365,4 +365,85 @@ If the eligible models are tied on (1) and (2), the result is **defer**: both ar
 
 ## 9. Results
 
-**NOT RUN — awaiting explicit approval.**
+**Completed.** One authorized live run per model, made with the exact commands in §3.
+
+### 9.1 Execution basis
+
+| Item | Value |
+|---|---|
+| Source commit | `09dba151969d190937ea5fff61032e8b45613f88` |
+| Corpus | `baec-extraction-live-corpus/v1` |
+| Cases | 14 synthetic cases |
+| Retry policy | no retries |
+| Attempts | exactly one attempt per model per case |
+
+Both models were evaluated against the same committed code, corpus, prompt, request specification, semantic validator, hard checks, timeout, and no-retry policy. Nothing was changed between the two runs.
+
+### 9.2 Sonnet result
+
+| Item | Value |
+|---|---|
+| Model | `claude-sonnet-5-5` |
+| operationally_valid | yes |
+| Attempts | 14 |
+| Terminal success | 14/14 |
+| Successful artifacts | 14/14 |
+| Hard checks | 87/87 |
+| Critical behavioral failures | 0 |
+| Provenance verified | 14/14 |
+| Authority tables unchanged | yes |
+| Input tokens | 32147 |
+| Output tokens | 7838 |
+| Elapsed seconds | 68.63 |
+
+### 9.3 Opus result
+
+| Item | Value |
+|---|---|
+| Model | `claude-opus-5-5` |
+| operationally_valid | yes |
+| Attempts | 14 |
+| Terminal success | 5/14 |
+| semantic_validation_failure | 9/14 |
+| Successful artifacts | 5/14 |
+| Hard checks | 69/87 |
+| Critical `clear_case_parse_failure` | 6 cases |
+| Critical `threshold_corruption` | 1 case |
+| Provenance verified | 14/14 |
+| Authority tables unchanged | yes |
+| Input tokens | 32147 |
+| Output tokens | 6013 |
+| Elapsed seconds | 93.53 |
+
+The hard-check total of 87 per model is the 45 corpus hard checks plus the three core hard checks (§6) for each of the 14 cases.
+
+### 9.4 Locked comparison outcome
+
+Both runs were operationally valid (§7.1), so eligibility was applied (§7.2). On this v1 synthetic corpus, `claude-sonnet-5-5` was the only model eligible under the precommitted comparison rule because it had no critical behavioral failure. `claude-opus-5-5` was ineligible on this corpus because of its critical failures (§9.3). Ranking by hard checks and artifacts was therefore not needed. Tokens and elapsed time are descriptive only and played no part.
+
+Scope of this outcome:
+- It is not a general model-quality claim. It does not show that either model is generally better or worse.
+- It does not establish the theoretical validity of BAEC.
+- It does not automatically configure a production or default model. Any model choice remains a human decision.
+- It is evidence only about this implementation and this 14-case synthetic evaluation.
+
+Observational checks were not part of the comparison (see §9.5, item 4).
+
+### 9.5 Findings carried forward to Phase 6D
+
+1. **C09 / CORE-NUMBERS.** A successful Opus artifact contained a normalization number absent from the source. The application semantic validator accepted the artifact, while the deterministic CORE-NUMBERS check rejected the unsupported number. The raw model output is not quoted or reconstructed here.
+2. **semantic_validation_failure observability.** Nine Opus cases ended in semantic validation failure, but the sanitized live report does not retain a machine-readable validation-reason code. Raw output must remain undisclosed.
+3. **Corpus criticality coverage.** C04 ended in semantic validation failure while its case checks still reported 6/6, because the case has no hard terminal-success check. C12 and C14 also had validation failures, but their terminal-success checks carry no critical label. Review this coverage in Phase 6D without retroactively changing the Phase 6C results.
+4. **Observational-result retention.** The committed harness evaluated the observational checks but did not emit or preserve their results. They were excluded from the Sonnet-versus-Opus comparison, and neither model was rerun to recover them.
+5. **Comparison execution.** The final Sonnet-versus-Opus rule was applied to the retained sanitized aggregates rather than by executing `compare_models` over preserved temporary reports, because each evaluation database was intentionally deleted after audit.
+
+### 9.6 Security and provenance record
+
+- Credentials were checked by presence only.
+- No credential value was printed or persisted.
+- No raw model output, interaction text from the runs, excerpt text, prompt, canonical result, or digest value is added to this documentation.
+- Authority tables were unchanged in both runs.
+- Provenance verification passed (14/14 for each model).
+- The temporary evaluation databases were deleted, and their removal was confirmed by the persistence audit.
+- The post-run offline regression remained 3970 passed, 1 deselected, 0 xfailed, 0 skipped.
+- The working tree remained clean after both live runs.
