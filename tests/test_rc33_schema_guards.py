@@ -13,6 +13,8 @@ from decimal import Decimal
 import pytest
 
 from baec_app.data.database import (
+    AI_APPEND_ONLY_TABLES,
+    AI_REPLACE_GUARDED_KEYS,
     APPEND_ONLY_TABLES,
     BAEC_RECORD_MUTABLE_COLUMNS,
     BAEC_RECORD_PROTECTED_COLUMNS,
@@ -42,6 +44,11 @@ EXPECTED_TRIGGERS = sorted(
     + [f"{table}_no_replace" for table in REPLACE_GUARDED_KEYS]
     + ["baec_records_protected_no_update", "baec_records_no_delete"]
     + ["interaction_evidence_verbatim"]
+    # Schema version 5 (Phase 6B): the AI provenance tables' triggers.
+    + [f"{table}_no_{op}" for table in AI_APPEND_ONLY_TABLES for op in ("update", "delete")]
+    + [f"{table}_no_replace" for table in AI_REPLACE_GUARDED_KEYS]
+    + ["ai_run_results_model_binding", "ai_run_outputs_require_result",
+       "ai_artifacts_require_success", "ai_artifact_excerpts_verbatim"]
 )
 
 
@@ -269,7 +276,7 @@ def test_rc33_guards_are_present_in_working_copies_and_the_canonical_seed():
         try:
             assert _trigger_names(canonical) == EXPECTED_TRIGGERS
             assert _trigger_names(working) == EXPECTED_TRIGGERS
-            assert len(EXPECTED_TRIGGERS) == 34
+            assert len(EXPECTED_TRIGGERS) == 34 + 19
             row = working.execute("SELECT * FROM interactions ORDER BY rowid").fetchone()
             refused(
                 working,

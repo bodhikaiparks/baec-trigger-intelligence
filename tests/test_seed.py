@@ -55,6 +55,12 @@ EXPECTED_COUNTS = {
     "evaluation_evidence": 1,
     "non_evaluation_evidence": 0,
     "account_state_transitions": 3,
+    # Schema version 5: the AI provenance tables start empty in the canonical seed.
+    "ai_runs": 0,
+    "ai_run_results": 0,
+    "ai_run_outputs": 0,
+    "ai_artifacts": 0,
+    "ai_artifact_excerpts": 0,
 }
 
 

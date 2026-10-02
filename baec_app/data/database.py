@@ -35,8 +35,9 @@ from baec_app.domain.enums import (
 # and its judgment to that BAEC. Version 3 added the RC-33 guards: protected
 # baec_records columns, no baec_records deletes, and no replacing stored rows.
 # Version 4 added evidence fidelity: interaction evidence text must occur
-# verbatim in the text of the interaction it cites.
-SCHEMA_VERSION = 4
+# verbatim in the text of the interaction it cites. Version 5 added the five
+# append-only Phase 6 AI provenance tables (docs/PHASE6_STRUCTURED_CLAUDE_PROVENANCE_DESIGN.md §10).
+SCHEMA_VERSION = 5
 MINIMUM_SQLITE_VERSION = (3, 37, 0)  # first version with STRICT tables
 
 
@@ -84,7 +85,15 @@ DATA_TABLES = (
     "evaluation_evidence",
     "non_evaluation_evidence",
     "account_state_transitions",
+) + (
+    # Phase 6 AI provenance (schema version 5). AI interpretation, never domain evidence.
+    "ai_runs",
+    "ai_run_results",
+    "ai_run_outputs",
+    "ai_artifacts",
+    "ai_artifact_excerpts",
 )
+AI_PROVENANCE_TABLES = DATA_TABLES[-5:]
 ALL_TABLES = ("schema_meta",) + DATA_TABLES
 
 APPEND_ONLY_TABLES = (
@@ -140,10 +149,72 @@ REPLACE_GUARDED_KEYS = {
     "account_state_transitions": (("transition_id",), ("authorization_id",)),
 }
 
+# The AI provenance tables are append-only too. They are kept apart from the
+# domain RC-33 constants above so those keep their Phase 3 meaning.
+AI_APPEND_ONLY_TABLES = AI_PROVENANCE_TABLES
+AI_REPLACE_GUARDED_KEYS = {
+    "ai_runs": (("ai_run_id",),),
+    "ai_run_results": (("ai_run_id",),),
+    "ai_run_outputs": (("ai_run_id",),),
+    "ai_artifacts": (("artifact_id",), ("ai_run_id",)),
+    "ai_artifact_excerpts": (("artifact_id", "excerpt_id"), ("artifact_id", "interaction_id", "text")),
+}
+
+# Terminal AI run vocabulary (Phase 6 design §11). Lowercase machine tokens.
+AI_RUN_STATUSES = (
+    "success",
+    "refusal",
+    "max_tokens",
+    "unexpected_stop",
+    "api_error",
+    "transport_failure",
+    "parse_failure",
+    "semantic_validation_failure",
+    "model_mismatch",
+    "interrupted",
+)
+AI_REMOTE_OUTCOMES = ("response_received", "not_sent", "unknown")
+# Statuses that exist only because a response came back.
+AI_RESPONSE_STATUSES = tuple(s for s in AI_RUN_STATUSES if s not in ("transport_failure", "interrupted"))
+# Statuses that may carry returned model text, and those that must.
+AI_OUTPUT_STATUSES = (
+    "success",
+    "refusal",
+    "max_tokens",
+    "unexpected_stop",
+    "parse_failure",
+    "semantic_validation_failure",
+    "model_mismatch",
+)
+AI_OUTPUT_REQUIRED_STATUSES = ("success", "semantic_validation_failure")
+AI_API_ERROR_CATEGORIES = (
+    "authentication",
+    "permission",
+    "rate_limited",
+    "overloaded",
+    "invalid_request",
+    "server_error",
+    "other",
+)
+# AI-inferred speaker of a source excerpt. An interpretation, never verified and never buyer evidence.
+AI_SPEAKER_LABELS = ("buyer", "seller", "unclear")
+# Each transport category implies its delivery state.
+AI_TRANSPORT_CATEGORIES = {"connection_not_established": "not_sent", "timeout_or_disconnect": "unknown"}
+
 
 def _values(members) -> str:
     """SQL value list for an enum column, generated from the enum itself."""
     return ", ".join(f"'{m.value}'" for m in members)
+
+
+def _tokens(values) -> str:
+    """SQL value list for a fixed vocabulary of plain string tokens."""
+    return ", ".join(f"'{value}'" for value in values)
+
+
+def _sha256(column: str) -> str:
+    """A lowercase hexadecimal SHA-256 digest: exactly 64 characters from [0-9a-f]."""
+    return f"(length({column}) = 64 AND {column} NOT GLOB '*[^0-9a-f]*')"
 
 
 def _in(column: str, enum_or_members) -> str:
@@ -314,7 +385,8 @@ def _schema_statements() -> list[str]:
             REFERENCES dormancy_judgments (judgment_id, baec_id) ON DELETE RESTRICT
     ) STRICT""",
     ]
-    for table in APPEND_ONLY_TABLES:
+    statements += _ai_provenance_tables()
+    for table in APPEND_ONLY_TABLES + AI_APPEND_ONLY_TABLES:
         for operation in ("UPDATE", "DELETE"):
             statements.append(
                 f"""
@@ -324,7 +396,7 @@ def _schema_statements() -> list[str]:
         SELECT RAISE(ABORT, '{table} is append-only');
     END"""
             )
-    for table, keys in REPLACE_GUARDED_KEYS.items():
+    for table, keys in (REPLACE_GUARDED_KEYS | AI_REPLACE_GUARDED_KEYS).items():
         collision = " OR ".join(
             f"EXISTS (SELECT 1 FROM {table} WHERE "
             + " AND ".join(f"{column} = NEW.{column}" for column in key)
@@ -372,7 +444,198 @@ def _schema_statements() -> list[str]:
         SELECT RAISE(ABORT, 'baec_records rows cannot be deleted');
     END"""
     )
+    statements += _ai_provenance_triggers()
     return statements
+
+
+# --- Phase 6 AI provenance (schema version 5) --------------------------------
+#
+# Records of AI runs, their single terminal result, the raw returned model
+# text, and successful structured artifacts with their source excerpts. AI
+# output is interpretation, never buyer evidence, human judgment, or approval.
+
+
+def _ai_provenance_tables() -> list[str]:
+    response = _tokens(AI_RESPONSE_STATUSES)
+    return [
+        f"""
+    CREATE TABLE ai_runs (
+        ai_run_id TEXT PRIMARY KEY CHECK (ai_run_id <> ''),
+        provider TEXT NOT NULL CHECK (provider = 'anthropic'),
+        task_type TEXT NOT NULL CHECK (task_type <> ''),
+        task_version TEXT NOT NULL CHECK (task_version <> ''),
+        account_id TEXT NOT NULL,
+        interaction_id TEXT NOT NULL,
+        requested_model TEXT NOT NULL CHECK (requested_model <> ''),
+        sdk_name TEXT NOT NULL CHECK (sdk_name <> ''),
+        sdk_version TEXT NOT NULL CHECK (sdk_version <> ''),
+        prompt_version TEXT NOT NULL CHECK (prompt_version <> ''),
+        prompt_digest TEXT NOT NULL CHECK {_sha256('prompt_digest')},
+        input_version TEXT NOT NULL CHECK (input_version <> ''),
+        input_digest TEXT NOT NULL CHECK {_sha256('input_digest')},
+        output_schema_version TEXT NOT NULL CHECK (output_schema_version <> ''),
+        output_schema_digest TEXT NOT NULL CHECK {_sha256('output_schema_digest')},
+        canonicalization_version TEXT NOT NULL CHECK (canonicalization_version <> ''),
+        request_spec_version TEXT NOT NULL CHECK (request_spec_version <> ''),
+        request_digest TEXT NOT NULL CHECK {_sha256('request_digest')},
+        requested_at TEXT NOT NULL,
+        retry_of_ai_run_id TEXT REFERENCES ai_runs (ai_run_id) ON DELETE RESTRICT,
+        CHECK (retry_of_ai_run_id IS NULL OR retry_of_ai_run_id <> ai_run_id),
+        -- Parent key that binds an artifact to its run's source, task, and versions.
+        UNIQUE (ai_run_id, account_id, interaction_id, task_type, task_version, output_schema_version),
+        -- A run's interaction must belong to its recorded account.
+        FOREIGN KEY (interaction_id, account_id)
+            REFERENCES interactions (interaction_id, account_id) ON DELETE RESTRICT
+    ) STRICT""",
+        f"""
+    CREATE TABLE ai_run_results (
+        ai_run_id TEXT PRIMARY KEY REFERENCES ai_runs (ai_run_id) ON DELETE RESTRICT,
+        status TEXT NOT NULL CHECK (status IN ({_tokens(AI_RUN_STATUSES)})),
+        remote_outcome TEXT NOT NULL CHECK (remote_outcome IN ({_tokens(AI_REMOTE_OUTCOMES)})),
+        provider_message_id TEXT CHECK (provider_message_id <> ''),
+        response_model TEXT CHECK (response_model <> ''),
+        stop_reason TEXT CHECK (stop_reason <> ''),
+        provider_request_id TEXT CHECK (provider_request_id <> ''),
+        input_tokens INTEGER CHECK (input_tokens >= 0),
+        output_tokens INTEGER CHECK (output_tokens >= 0),
+        cache_creation_input_tokens INTEGER CHECK (cache_creation_input_tokens >= 0),
+        cache_read_input_tokens INTEGER CHECK (cache_read_input_tokens >= 0),
+        failure_category TEXT,
+        failure_codes TEXT CHECK (failure_codes <> ''),
+        output_digest TEXT CHECK (output_digest IS NULL OR {_sha256('output_digest')}),
+        completed_at TEXT NOT NULL,
+        -- Delivery state follows from the status.
+        CHECK (
+            (status IN ({response}) AND remote_outcome = 'response_received')
+            OR (status = 'transport_failure' AND remote_outcome IN ('not_sent', 'unknown'))
+            OR (status = 'interrupted' AND remote_outcome = 'unknown')
+        ),
+        -- Returned model text exists only for statuses that can carry it, and must for some.
+        CHECK (status IN ({_tokens(AI_OUTPUT_STATUSES)}) OR output_digest IS NULL),
+        CHECK (status NOT IN ({_tokens(AI_OUTPUT_REQUIRED_STATUSES)}) OR output_digest IS NOT NULL),
+        CHECK (status <> 'success' OR (
+            provider_message_id IS NOT NULL AND response_model IS NOT NULL AND stop_reason IS 'end_turn'
+        )),
+        -- NULL-safe comparisons throughout: a CHECK whose expression is NULL would pass.
+        CHECK (status <> 'refusal' OR stop_reason IS 'refusal'),
+        CHECK (status <> 'max_tokens' OR stop_reason IS 'max_tokens'),
+        CHECK (status <> 'unexpected_stop' OR stop_reason NOT IN ('end_turn', 'refusal', 'max_tokens')),
+        CHECK (status <> 'unexpected_stop' OR stop_reason IS NOT NULL),
+        CHECK (status <> 'model_mismatch' OR response_model IS NOT NULL),
+        -- No response: no response metadata.
+        CHECK (status NOT IN ('transport_failure', 'interrupted') OR (
+            provider_message_id IS NULL AND response_model IS NULL AND stop_reason IS NULL
+            AND input_tokens IS NULL AND output_tokens IS NULL
+            AND cache_creation_input_tokens IS NULL AND cache_read_input_tokens IS NULL
+        )),
+        -- Failure categories are a fixed vocabulary, used only where the design defines them.
+        CHECK (
+            (status = 'api_error' AND COALESCE(failure_category IN ({_tokens(AI_API_ERROR_CATEGORIES)}), 0))
+            OR (status = 'transport_failure' AND (
+                (failure_category IS 'connection_not_established' AND remote_outcome = 'not_sent')
+                OR (failure_category IS 'timeout_or_disconnect' AND remote_outcome = 'unknown')
+            ))
+            OR (status NOT IN ('api_error', 'transport_failure') AND failure_category IS NULL)
+        ),
+        CHECK (status IN ('parse_failure', 'semantic_validation_failure') OR failure_codes IS NULL),
+        CHECK (status <> 'semantic_validation_failure' OR failure_codes IS NOT NULL)
+    ) STRICT""",
+        f"""
+    CREATE TABLE ai_run_outputs (
+        ai_run_id TEXT PRIMARY KEY REFERENCES ai_run_results (ai_run_id) ON DELETE RESTRICT,
+        raw_output_text TEXT NOT NULL,
+        output_digest TEXT NOT NULL CHECK {_sha256('output_digest')}
+    ) STRICT""",
+        f"""
+    CREATE TABLE ai_artifacts (
+        artifact_id TEXT PRIMARY KEY CHECK (artifact_id <> ''),
+        ai_run_id TEXT NOT NULL UNIQUE REFERENCES ai_run_results (ai_run_id) ON DELETE RESTRICT,
+        task_type TEXT NOT NULL,
+        task_version TEXT NOT NULL,
+        output_schema_version TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        interaction_id TEXT NOT NULL,
+        canonical_result TEXT NOT NULL CHECK (canonical_result <> ''),
+        artifact_digest TEXT NOT NULL CHECK {_sha256('artifact_digest')},
+        created_at TEXT NOT NULL,
+        -- Parent key for the excerpts' interaction binding.
+        UNIQUE (artifact_id, interaction_id),
+        -- The artifact's source, task, task version, and output schema version are exactly its run's.
+        FOREIGN KEY (ai_run_id, account_id, interaction_id, task_type, task_version, output_schema_version)
+            REFERENCES ai_runs (ai_run_id, account_id, interaction_id, task_type, task_version, output_schema_version)
+            ON DELETE RESTRICT
+    ) STRICT""",
+        f"""
+    CREATE TABLE ai_artifact_excerpts (
+        artifact_id TEXT NOT NULL,
+        excerpt_id TEXT NOT NULL CHECK (excerpt_id <> ''),
+        interaction_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        -- AI inference about who spoke; never verified, never buyer evidence.
+        attributed_speaker TEXT NOT NULL CHECK (attributed_speaker IN ({_tokens(AI_SPEAKER_LABELS)})),
+        PRIMARY KEY (artifact_id, excerpt_id),
+        -- The same source text is never cited twice in one artifact under different IDs.
+        UNIQUE (artifact_id, interaction_id, text),
+        FOREIGN KEY (artifact_id, interaction_id)
+            REFERENCES ai_artifacts (artifact_id, interaction_id) ON DELETE RESTRICT
+    ) STRICT""",
+    ]
+
+
+# ASCII whitespace for SQL trim(); the store also refuses any Unicode whitespace-only text.
+_SQL_WHITESPACE = "' ' || char(9, 10, 11, 12, 13)"
+
+
+def _ai_provenance_triggers() -> list[str]:
+    return [
+        # A model-dependent status agrees with the run's explicitly requested model.
+        """
+    CREATE TRIGGER ai_run_results_model_binding
+    BEFORE INSERT ON ai_run_results
+    WHEN (NEW.status = 'success'
+          AND NEW.response_model IS NOT (SELECT requested_model FROM ai_runs WHERE ai_run_id = NEW.ai_run_id))
+        OR (NEW.status = 'model_mismatch'
+          AND NEW.response_model IS (SELECT requested_model FROM ai_runs WHERE ai_run_id = NEW.ai_run_id))
+    BEGIN
+        SELECT RAISE(ABORT, 'ai_run_results response model disagrees with its status');
+    END""",
+        # Returned text is stored only under a result that names the same digest.
+        """
+    CREATE TRIGGER ai_run_outputs_require_result
+    BEFORE INSERT ON ai_run_outputs
+    WHEN NOT EXISTS (
+        SELECT 1 FROM ai_run_results
+        WHERE ai_run_id = NEW.ai_run_id AND output_digest = NEW.output_digest
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'ai_run_outputs requires a result that records the same output digest');
+    END""",
+        # An artifact exists only for a successful run that has its raw output.
+        """
+    CREATE TRIGGER ai_artifacts_require_success
+    BEFORE INSERT ON ai_artifacts
+    WHEN NOT EXISTS (
+        SELECT 1 FROM ai_run_results AS result
+        JOIN ai_run_outputs AS output ON output.ai_run_id = result.ai_run_id
+        WHERE result.ai_run_id = NEW.ai_run_id AND result.status = 'success'
+            AND output.output_digest = result.output_digest
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'ai_artifacts requires a successful run with its raw output');
+    END""",
+        # Evidence fidelity, as for interaction_evidence: non-blank, exact case-sensitive substring.
+        f"""
+    CREATE TRIGGER ai_artifact_excerpts_verbatim
+    BEFORE INSERT ON ai_artifact_excerpts
+    WHEN trim(NEW.text, {_SQL_WHITESPACE}) = ''
+        OR NOT COALESCE(
+            instr((SELECT text FROM interactions WHERE interaction_id = NEW.interaction_id), NEW.text) > 0,
+            0
+        )
+    BEGIN
+        SELECT RAISE(ABORT, 'ai_artifact_excerpts text must occur verbatim in its interaction');
+    END""",
+    ]
 
 
 def check_sqlite_version(version_info: tuple[int, ...] | None = None) -> None:
@@ -451,15 +714,23 @@ def open_database(path: str = ":memory:") -> sqlite3.Connection:
 
 @contextmanager
 def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """One immediate write transaction: commit on success, roll back on any error."""
+    """One immediate write transaction: commit on success, roll back on any error.
+
+    A failure of COMMIT itself (a deferred constraint, or a busy database) is
+    handled like a failure of the body: the transaction is rolled back, so the
+    connection is never left inside it, and the original error is re-raised.
+    """
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield connection
-    except BaseException:
-        connection.execute("ROLLBACK")
-        raise
-    else:
         connection.execute("COMMIT")
+    except BaseException as error:
+        if connection.in_transaction:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error as rollback_error:
+                error.add_note(f"rolling back also failed: {rollback_error}")
+        raise
 
 
 def make_read_only(connection: sqlite3.Connection) -> None:

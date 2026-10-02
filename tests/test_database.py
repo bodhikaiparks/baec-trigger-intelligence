@@ -6,6 +6,9 @@ import pytest
 
 from baec_app.data import database
 from baec_app.data.database import (
+    AI_APPEND_ONLY_TABLES,
+    AI_PROVENANCE_TABLES,
+    AI_REPLACE_GUARDED_KEYS,
     ALL_TABLES,
     APPEND_ONLY_TABLES,
     REPLACE_GUARDED_KEYS,
@@ -21,6 +24,15 @@ from baec_app.data.database import (
 )
 from baec_app.domain import enums
 from tests.persistence_builders import connection, no_leaked_connections  # noqa: F401
+
+
+# Schema version 5 (Phase 6B): the AI provenance tables' append-only, replace, and integrity triggers.
+AI_TRIGGERS = (
+    [f"{table}_no_{op}" for table in AI_APPEND_ONLY_TABLES for op in ("update", "delete")]
+    + [f"{table}_no_replace" for table in AI_REPLACE_GUARDED_KEYS]
+    + ["ai_run_results_model_binding", "ai_run_outputs_require_result",
+       "ai_artifacts_require_success", "ai_artifact_excerpts_verbatim"]
+)
 
 
 def test_sqlite_version_check_refuses_versions_without_strict_tables():
@@ -43,6 +55,7 @@ def test_foreign_keys_are_enforced_on_every_connection(connection):
 
 
 def test_schema_has_exactly_the_thirteen_approved_tables(connection):
+    """The thirteen Phase 3 tables plus, since schema version 5, the five AI provenance tables (name kept for ID continuity)."""
     names = [
         row[0]
         for row in connection.execute(
@@ -50,7 +63,7 @@ def test_schema_has_exactly_the_thirteen_approved_tables(connection):
         )
     ]
     assert sorted(names) == sorted(ALL_TABLES)
-    assert len(names) == 13
+    assert len(names) == 13 + len(AI_PROVENANCE_TABLES) == 18
 
 
 def test_every_table_is_strict(connection):
@@ -65,6 +78,7 @@ def test_append_only_triggers_cover_exactly_the_approved_tables(connection):
         + [f"{table}_no_replace" for table in REPLACE_GUARDED_KEYS]
         + ["baec_records_protected_no_update", "baec_records_no_delete"]
         + ["interaction_evidence_verbatim"]
+        + AI_TRIGGERS
     )
     assert triggers == expected
     assert len(APPEND_ONLY_TABLES) == 10
@@ -120,7 +134,7 @@ def test_strict_tables_refuse_a_value_of_the_wrong_storage_type(connection):
 
 
 def test_schema_version_is_set_and_a_mismatch_is_refused(connection):
-    assert schema_version(connection) == database.SCHEMA_VERSION == 4
+    assert schema_version(connection) == database.SCHEMA_VERSION == 5
     require_current_schema(connection)
     connection.execute("PRAGMA user_version = 99")
     with pytest.raises(DatabaseVersionError):
@@ -202,12 +216,61 @@ def test_working_copy_is_complete_independent_and_writable(connection):
     make_read_only(connection)
     copy = create_working_copy(connection)
     try:
-        assert schema_version(copy) == 4
+        assert schema_version(copy) == 5
         assert copy.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         copy.execute("INSERT INTO accounts (account_id, name) VALUES ('B', 'Synthetic')")
         assert copy.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
         triggers = copy.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'").fetchone()[0]
-        assert triggers == 34
+        assert triggers == 34 + len(AI_TRIGGERS) == 53
     finally:
         copy.close()
+
+
+# --- transaction(): a failed COMMIT never leaves the connection inside the transaction -----
+
+
+def _deferred_constraint_connection():
+    """Test-only tables whose foreign key is checked only at COMMIT."""
+    connection = database.connect()
+    connection.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+    connection.execute(
+        "CREATE TABLE child (id INTEGER PRIMARY KEY, "
+        "parent_id INTEGER REFERENCES parent (id) DEFERRABLE INITIALLY DEFERRED)"
+    )
+    return connection
+
+
+def test_a_commit_failure_rolls_back_and_leaves_the_connection_reusable():
+    connection = _deferred_constraint_connection()
+    try:
+        body_completed = []
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            with database.transaction(connection):
+                connection.execute("INSERT INTO child (id, parent_id) VALUES (1, 99)")  # deferred: accepted here
+                connection.execute("INSERT INTO parent (id) VALUES (7)")
+                body_completed.append(True)
+        assert body_completed == [True]  # the body finished; COMMIT is what failed
+        assert not connection.in_transaction  # the helper rolled back
+        assert connection.execute("SELECT COUNT(*) FROM child").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM parent").fetchone()[0] == 0
+        with database.transaction(connection):  # the same connection is immediately reusable
+            connection.execute("INSERT INTO parent (id) VALUES (99)")
+            connection.execute("INSERT INTO child (id, parent_id) VALUES (1, 99)")
+        assert not connection.in_transaction
+        assert connection.execute("SELECT id, parent_id FROM child").fetchall() == [(1, 99)]
+    finally:
+        connection.close()
+
+
+def test_a_body_failure_still_rolls_back_and_re_raises_the_original_error():
+    connection = _deferred_constraint_connection()
+    try:
+        with pytest.raises(RuntimeError, match="body failed"):
+            with database.transaction(connection):
+                connection.execute("INSERT INTO parent (id) VALUES (1)")
+                raise RuntimeError("body failed")
+        assert not connection.in_transaction
+        assert connection.execute("SELECT COUNT(*) FROM parent").fetchone()[0] == 0
+    finally:
+        connection.close()
