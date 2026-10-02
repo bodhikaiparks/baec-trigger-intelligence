@@ -1,0 +1,280 @@
+"""Phase 4 production architecture boundaries (static AST checks).
+
+Scans production code only: every module under baec_app/ and scripts/.
+tests/ is exempt. Each rule is also run against synthetic violating source
+to prove the scanner reports it. Rules are added increment by increment;
+4A covers layering (R6), data-free foundation modules (R7), canonical
+serialization purity, and the two Phase 4 proposal origins.
+"""
+
+from __future__ import annotations
+
+import ast
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+
+from baec_app.application.proposals import ProposalOrigin
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_ROOTS = (REPO_ROOT / "baec_app", REPO_ROOT / "scripts")
+
+# --- scanner --------------------------------------------------------------------
+
+
+@dataclass
+class Facts:
+    module: str
+    imports: list[tuple[str, int]] = field(default_factory=list)  # fully qualified targets
+    calls: list[tuple[str, int]] = field(default_factory=list)  # resolved dotted callee names
+    attributes: list[tuple[str, int]] = field(default_factory=list)  # attribute names accessed
+    dynamic_imports: list[tuple[str, int]] = field(default_factory=list)  # string arguments to import calls
+
+
+DYNAMIC_IMPORT_CALLS = ("importlib.import_module", "importlib.__import__", "__import__")
+
+
+def _resolve_relative(module: str, is_package: bool, level: int, target: str | None) -> str:
+    parts = module.split(".")
+    package = parts if is_package else parts[:-1]
+    base = package[: len(package) - (level - 1)] if level > 1 else package
+    return ".".join(base + ([target] if target else []))
+
+
+def scan(source: str, module: str, is_package: bool = False) -> Facts:
+    """Collect imports, resolved calls, attribute names, and dynamic-import targets."""
+    tree = ast.parse(source)
+    facts = Facts(module)
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for name in node.names:
+                facts.imports.append((name.name, node.lineno))
+                aliases[name.asname or name.name.split(".")[0]] = name.name if name.asname else name.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                base = _resolve_relative(module, is_package, node.level, node.module)
+            facts.imports.append((base, node.lineno))
+            for name in node.names:
+                full = f"{base}.{name.name}" if base else name.name
+                facts.imports.append((full, node.lineno))
+                aliases[name.asname or name.name] = full
+        elif isinstance(node, ast.Attribute):
+            facts.attributes.append((node.attr, node.lineno))
+
+    def dotted(expr: ast.AST) -> str | None:
+        if isinstance(expr, ast.Name):
+            return aliases.get(expr.id, expr.id)
+        if isinstance(expr, ast.Attribute):
+            base = dotted(expr.value)
+            return f"{base}.{expr.attr}" if base else None
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = dotted(node.func)
+            if name:
+                facts.calls.append((name, node.lineno))
+            # Only a string passed to a recognized import call is a dynamic import;
+            # docstrings and other strings that merely mention a package are not.
+            if name in DYNAMIC_IMPORT_CALLS and node.args:
+                target = node.args[0]
+                if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                    facts.dynamic_imports.append((target.value, node.lineno))
+    return facts
+
+
+def _in_package(name: str, package: str) -> bool:
+    return name == package or name.startswith(package + ".")
+
+
+def imports_package(facts: Facts, package: str) -> list[str]:
+    """Imports of a package, static or through a recognized dynamic-import call."""
+    found = [f"{facts.module}:{line} imports {name}" for name, line in facts.imports if _in_package(name, package)]
+    found += [
+        f"{facts.module}:{line} dynamically imports {name}"
+        for name, line in facts.dynamic_imports
+        if _in_package(name, package)
+    ]
+    return found
+
+
+def production_modules() -> list[tuple[str, Facts]]:
+    modules = []
+    for root in PRODUCTION_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            relative = path.relative_to(REPO_ROOT).with_suffix("")
+            parts = list(relative.parts)
+            is_package = parts[-1] == "__init__"
+            if is_package:
+                parts = parts[:-1]
+            module = ".".join(parts)
+            modules.append((module, scan(path.read_text(encoding="utf-8"), module, is_package)))
+    return modules
+
+
+# --- rules ----------------------------------------------------------------------
+
+DATA_FREE_MODULES = (
+    "baec_app.application.proposals",
+    "baec_app.application.requests",
+    "baec_app.application.canonical",
+    "baec_app.application.context",
+    "baec_app.application.errors",
+)
+
+FORBIDDEN_IN_CANONICAL_CALLS = (
+    "dataclasses.asdict",
+    "dataclasses.astuple",
+    "dataclasses.fields",
+    "repr",
+    "vars",
+)
+FORBIDDEN_IN_CANONICAL_IMPORTS = ("pickle", "copyreg", "marshal", "shelve", "dataclasses")
+
+
+def rule_r6_layering(facts: Facts) -> list[str]:
+    """domain imports neither data nor application; data does not import application."""
+    if _in_package(facts.module, "baec_app.domain"):
+        return imports_package(facts, "baec_app.data") + imports_package(facts, "baec_app.application")
+    if _in_package(facts.module, "baec_app.data"):
+        return imports_package(facts, "baec_app.application")
+    return []
+
+
+def rule_r7_data_free(facts: Facts) -> list[str]:
+    """Foundation application modules import nothing from the data layer."""
+    if facts.module in DATA_FREE_MODULES:
+        return imports_package(facts, "baec_app.data")
+    return []
+
+
+def rule_canonical_purity(facts: Facts) -> list[str]:
+    """Canonical serialization uses explicit field tables only: no generic introspection or pickling."""
+    if facts.module != "baec_app.application.canonical":
+        return []
+    found = [f"{facts.module}:{line} calls {name}" for name, line in facts.calls if name in FORBIDDEN_IN_CANONICAL_CALLS]
+    for package in FORBIDDEN_IN_CANONICAL_IMPORTS:
+        found += imports_package(facts, package)
+    found += [f"{facts.module}:{line} accesses {attr}" for attr, line in facts.attributes if attr in ("__dict__", "__dataclass_fields__")]
+    return found
+
+
+RULES = {
+    "R6 layering": rule_r6_layering,
+    "R7 data-free foundation modules": rule_r7_data_free,
+    "canonical purity": rule_canonical_purity,
+}
+
+
+# --- production checks ------------------------------------------------------------
+
+
+def test_scanner_finds_the_production_packages():
+    names = {module for module, _ in production_modules()}
+    assert "baec_app.domain.models" in names and "baec_app.data.repository" in names
+    assert "scripts.seed_demo" in names
+    assert not any(_in_package(name, "tests") for name in names)
+    assert set(DATA_FREE_MODULES) <= names  # the rule is not vacuous
+
+
+@pytest.mark.parametrize("rule", RULES.values(), ids=RULES.keys())
+def test_production_code_obeys_the_rule(rule):
+    violations = [message for _, facts in production_modules() for message in rule(facts)]
+    assert violations == []
+
+
+def test_proposal_origins_are_exactly_human_draft_and_deterministic():
+    assert [o.value for o in ProposalOrigin] == ["HUMAN_DRAFT", "DETERMINISTIC"], (
+        "AI_MODEL or any other origin may not be added until persistent AI-origin provenance "
+        "is designed and implemented (PHASE4 design §18)."
+    )
+
+
+# --- scanner self-tests: each synthetic snippet must be reported --------------------
+
+VIOLATIONS = {
+    "domain imports data": ("baec_app.domain.x", "from baec_app.data import repository", rule_r6_layering),
+    "domain imports data via alias": ("baec_app.domain.x", "import baec_app.data.repository as r", rule_r6_layering),
+    "domain imports data relatively": ("baec_app.domain.x", "from ..data import repository", rule_r6_layering),
+    "domain imports application": ("baec_app.domain.x", "from baec_app.application import canonical", rule_r6_layering),
+    "domain imports data dynamically": (
+        "baec_app.domain.x",
+        "import importlib\nimportlib.import_module('baec_app.data.repository')",
+        rule_r6_layering,
+    ),
+    "domain imports data via aliased import_module": (
+        "baec_app.domain.x",
+        "from importlib import import_module as load\nload('baec_app.data')",
+        rule_r6_layering,
+    ),
+    "domain imports data via aliased importlib": (
+        "baec_app.domain.x",
+        "import importlib as il\nil.import_module('baec_app.data.database')",
+        rule_r6_layering,
+    ),
+    "domain imports data via __import__": ("baec_app.domain.x", "__import__('baec_app.data.repository')", rule_r6_layering),
+    "requests imports data dynamically": (
+        "baec_app.application.requests",
+        "import importlib\nimportlib.import_module('baec_app.data')",
+        rule_r7_data_free,
+    ),
+    "data imports application": ("baec_app.data.x", "import baec_app.application.requests", rule_r6_layering),
+    "data imports application relatively": ("baec_app.data.x", "from ..application.errors import ApplicationError", rule_r6_layering),
+    "requests imports data": ("baec_app.application.requests", "from baec_app.data.repository import Repository", rule_r7_data_free),
+    "context imports data relatively": ("baec_app.application.context", "from ..data import database", rule_r7_data_free),
+    "canonical calls asdict": ("baec_app.application.canonical", "import dataclasses\ndataclasses.asdict(x)", rule_canonical_purity),
+    "canonical calls aliased asdict": (
+        "baec_app.application.canonical",
+        "from dataclasses import asdict as flatten\nflatten(x)",
+        rule_canonical_purity,
+    ),
+    "canonical calls fields": ("baec_app.application.canonical", "from dataclasses import fields\nfields(x)", rule_canonical_purity),
+    "canonical calls repr": ("baec_app.application.canonical", "repr(x)", rule_canonical_purity),
+    "canonical calls vars": ("baec_app.application.canonical", "vars(x)", rule_canonical_purity),
+    "canonical imports pickle": ("baec_app.application.canonical", "import pickle", rule_canonical_purity),
+    "canonical reads __dict__": ("baec_app.application.canonical", "x.__dict__", rule_canonical_purity),
+}
+
+
+@pytest.mark.parametrize("case", VIOLATIONS.values(), ids=VIOLATIONS.keys())
+def test_scanner_reports_synthetic_violations(case):
+    module, source, rule = case
+    assert rule(scan(source, module)) != []
+
+
+ALLOWED = {
+    "data imports domain": ("baec_app.data.x", "from baec_app.domain.models import Account", rule_r6_layering),
+    "application imports data outside the foundation modules": (
+        "baec_app.application.dormancy",
+        "from baec_app.data.repository import Repository",
+        rule_r7_data_free,
+    ),
+    "canonical uses getattr and str": ("baec_app.application.canonical", "getattr(x, 'a')\nstr(d)", rule_canonical_purity),
+    "a string merely mentioning data": ("baec_app.domain.x", "'the data layer'", rule_r6_layering),
+    "a docstring naming baec_app.data": (
+        "baec_app.domain.x",
+        '"""Stored by baec_app.data.repository; see baec_app.data."""\nX = "baec_app.data.database"',
+        rule_r6_layering,
+    ),
+    "a docstring naming baec_app.data in a foundation module": (
+        "baec_app.application.requests",
+        '"""baec_app.data.repository.Repository executes these requests later."""',
+        rule_r7_data_free,
+    ),
+    "a string passed to an unrelated call": ("baec_app.domain.x", "print('baec_app.data')", rule_r6_layering),
+}
+
+
+@pytest.mark.parametrize("case", ALLOWED.values(), ids=ALLOWED.keys())
+def test_scanner_does_not_report_allowed_code(case):
+    module, source, rule = case
+    assert rule(scan(source, module)) == []
+
+
+def test_relative_imports_resolve_against_the_package():
+    assert _resolve_relative("baec_app.domain.models", False, 2, "data") == "baec_app.data"
+    assert _resolve_relative("baec_app.domain", True, 1, "models") == "baec_app.domain.models"
+    assert _resolve_relative("baec_app.application.requests", False, 1, "canonical") == "baec_app.application.canonical"
