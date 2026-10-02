@@ -1,9 +1,11 @@
 """The Anthropic implementation of ExtractionProvider: the only production module that imports anthropic.
 
 Implementation contract: docs/PHASE6C_ANTHROPIC_SDK_CHARACTERIZATION.md.
-- The client is built with max_retries=0, so one invoke is one HTTP attempt; an
-  injected client must have the same setting. Authentication comes only from the
-  SDK and the environment.
+- The client is built with max_retries=0, so one invoke is one HTTP attempt, and
+  an explicit timeout of ANTHROPIC_TIMEOUT_SECONDS; an injected client must have
+  the same settings. The timeout is transport configuration: it is never part of
+  AiRequestSpec or any digest. Authentication comes only from the SDK and the
+  environment.
 - Requests use messages.create with an explicit Structured Outputs output_config
   (never messages.parse), with arguments taken only from the AiRequestSpec: no
   tools, thinking, sampling parameters, or metadata.
@@ -21,6 +23,9 @@ import httpx2
 from baec_app.ai.canonical import canonical_json
 from baec_app.ai.contracts import API_METHOD, OUTPUT_SCHEMA_VERSION, PROVIDER, REQUEST_SPEC_VERSION, BaecExtractionOutput
 from baec_app.ai.provider import AiRequestSpec, ProviderApiError, ProviderResponse, ProviderTransportError
+
+# Transport configuration (6C-C1): an explicit per-request timeout, never part of the request spec or a digest.
+ANTHROPIC_TIMEOUT_SECONDS = 180.0
 
 # The structured-output model behind each output schema version.
 _OUTPUT_MODELS = {OUTPUT_SCHEMA_VERSION: BaecExtractionOutput}
@@ -53,9 +58,10 @@ class AnthropicExtractionProvider:
 
     def __init__(self, client: anthropic.Anthropic | None = None) -> None:
         if client is None:
-            client = anthropic.Anthropic(max_retries=0)
-        if type(client) is not anthropic.Anthropic or client.max_retries != 0:
-            raise ValueError("the Anthropic client must be anthropic.Anthropic with max_retries=0")
+            client = anthropic.Anthropic(max_retries=0, timeout=ANTHROPIC_TIMEOUT_SECONDS)
+        if type(client) is not anthropic.Anthropic or client.max_retries != 0 \
+                or type(client.timeout) is not float or client.timeout != ANTHROPIC_TIMEOUT_SECONDS:
+            raise ValueError("the Anthropic client must be anthropic.Anthropic with max_retries=0 and the locked timeout")
         self._client = client
 
     def prepare_request(

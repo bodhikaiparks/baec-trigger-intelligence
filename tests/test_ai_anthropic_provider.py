@@ -12,7 +12,7 @@ import httpx2
 import pytest
 
 from baec_app.ai import anthropic_provider
-from baec_app.ai.anthropic_provider import AnthropicExtractionProvider, AnthropicSchemaDriftError
+from baec_app.ai.anthropic_provider import ANTHROPIC_TIMEOUT_SECONDS, AnthropicExtractionProvider, AnthropicSchemaDriftError
 from baec_app.ai.contracts import BaecExtractionOutput
 from baec_app.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT_V1
 from baec_app.ai.provider import SENT_FIELDS, AiRequestSpec, ProviderApiError, ProviderTransportError
@@ -67,8 +67,8 @@ def raising(exception):
     return Transport(respond)
 
 
-def provider_for(transport, max_retries=0):
-    client = anthropic.Anthropic(api_key=FAKE_KEY, max_retries=max_retries,
+def provider_for(transport, max_retries=0, timeout=ANTHROPIC_TIMEOUT_SECONDS):
+    client = anthropic.Anthropic(api_key=FAKE_KEY, max_retries=max_retries, timeout=timeout,
                                  http_client=httpx2.Client(transport=httpx2.MockTransport(transport)))
     return AnthropicExtractionProvider(client)
 
@@ -87,12 +87,19 @@ def test_the_default_client_has_retries_disabled_and_no_explicit_key(monkeypatch
     monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)  # the SDK reads it from the environment
     provider = AnthropicExtractionProvider()
     assert type(provider._client) is anthropic.Anthropic and provider._client.max_retries == 0
+    assert ANTHROPIC_TIMEOUT_SECONDS == 180.0
+    assert type(provider._client.timeout) is float and provider._client.timeout == 180.0
     assert (provider.provider_name, provider.sdk_name, provider.sdk_version) == ("anthropic", "anthropic", anthropic.__version__)
 
 
 def test_a_client_that_retries_or_is_not_the_sdk_client_is_refused():
     with pytest.raises(ValueError):
         provider_for(replying([]), max_retries=2)
+    with pytest.raises(ValueError):  # the SDK default timeout, not the locked one
+        AnthropicExtractionProvider(anthropic.Anthropic(api_key=FAKE_KEY, max_retries=0))
+    for other in (60.0, 600.0, httpx2.Timeout(180.0)):
+        with pytest.raises(ValueError):
+            provider_for(replying([]), timeout=other)
     with pytest.raises(ValueError):
         AnthropicExtractionProvider(object())
 
@@ -238,3 +245,28 @@ def test_invoke_refuses_a_spec_for_another_provider_or_method():
     for change in ({"provider": "openai"}, {"api_method": "messages.parse"}):
         with pytest.raises(ValueError):
             provider.invoke(replace(spec, **change))
+
+
+# --- timeout is transport configuration, never request content ---------------------------------
+
+
+def test_the_timeout_is_not_part_of_the_spec_its_digest_or_the_request_body():
+    transport = replying([{"type": "text", "text": as_text(output())}])
+    provider = provider_for(transport)
+    spec = spec_for(provider)
+    semantic = json.dumps(spec.to_json_object())
+    assert "timeout" not in semantic and "180" not in semantic
+    provider.invoke(spec)
+    body = json.loads(transport.requests[0].content)
+    assert "timeout" not in body
+    # applied as transport configuration only: every phase of the one HTTP attempt is bounded by 180 s
+    assert transport.requests[0].extensions["timeout"] == {"connect": 180.0, "read": 180.0, "write": 180.0, "pool": 180.0}
+
+
+def test_a_timeout_still_maps_to_an_unknown_transport_failure():
+    transport = raising(httpx2.ReadTimeout("t"))
+    provider = provider_for(transport)
+    with pytest.raises(ProviderTransportError) as raised:
+        provider.invoke(spec_for(provider))
+    assert (raised.value.category, raised.value.remote_outcome) == ("timeout_or_disconnect", "unknown")
+    assert len(transport.requests) == 1
