@@ -1,6 +1,6 @@
 # Phase 4 Design: Application & Human Authorization Boundary
 
-> **Approved design — implementation complete pending final checkpoint; see `docs/PHASE4_IMPLEMENTATION_TRACEABILITY.md`.**
+> **Approved design — implemented at `c70feb4`; see `docs/PHASE4_IMPLEMENTATION_TRACEABILITY.md`.**
 > This document is the approved design. Where the implementation refines it, the traceability document records the difference.
 
 **Project:** BAEC Trigger Intelligence

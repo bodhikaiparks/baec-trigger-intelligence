@@ -2,7 +2,7 @@
 
 **Project:** BAEC Trigger Intelligence
 **Design:** `docs/PHASE4_APPLICATION_BOUNDARY_DESIGN.md` (approved, commit `2c2016d`)
-**Implementation:** increments 4A `ac86daa`, 4B `a5a3be7`, 4C `427cf05`, 4D `12e7ea7`, 4E (the commit tagged `phase-4-application-boundary`)
+**Implementation:** increments 4A `ac86daa`, 4B `a5a3be7`, 4C `427cf05`, 4D `12e7ea7`, 4E `c70feb4`; checkpoint tag `phase-4-application-boundary`
 **Status:** Records how the approved Phase 4 design is implemented and tested, and where the implementation refines it.
 
 ---
@@ -156,6 +156,6 @@ Not in Phase 4: Claude API; AI extraction; the `AI_MODEL` origin; persistent AI-
 | 4B `a5a3be7` | 1937 passed |
 | 4C `427cf05` | 2274 passed |
 | 4D `12e7ea7` | 2403 passed |
-| 4E (tagged `phase-4-application-boundary`) | 2659 passed, of which 1001 are Phase 4 application tests (Python 3.14.3, SQLite 3.50.4, 2026-10-01) |
+| 4E `c70feb4` | 2659 passed, of which 1001 are Phase 4 application tests (Python 3.14.3, SQLite 3.50.4, 2026-10-01) |
 
 These are software tests on synthetic data. They do not validate the theory.

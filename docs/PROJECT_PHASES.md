@@ -84,7 +84,7 @@ Tag `phase-4-application-boundary`. Design approved in `docs/PHASE4_APPLICATION_
 | 4B | `a5a3be7` | Human confirmation gate: sessions, one approval per request, validate-then-consume redemption |
 | 4C | `427cf05` | `authority.py`, classification and dormancy-judgment services; gate registration tightened to `register(session, request)` |
 | 4D | `12e7ea7` | Account-state service: previews, request coherence, human-authorized transitions |
-| 4E | the tagged commit | Proposal objects, read path, facades, composition, final boundary rules, traceability |
+| 4E | `c70feb4` | Proposal objects, read path, facades, composition, final boundary rules, traceability |
 
 Contents: `baec_app/application/` (no change to the domain, data, schema, or seed data). Tests: 2659 passing, of which 1001 are Phase 4 application tests; the 1658 earlier tests are unchanged.
 
