@@ -4,7 +4,8 @@ Scans production code only: every module under baec_app/ and scripts/.
 tests/ is exempt. Each rule is also run against synthetic violating source
 to prove the scanner reports it. Rules are added increment by increment;
 4A covers layering (R6), data-free foundation modules (R7), canonical
-serialization purity, and the two Phase 4 proposal origins.
+serialization purity, and the two Phase 4 proposal origins; 4B adds R4
+(the gate sentinel and HumanApproval construction stay inside approval.py).
 """
 
 from __future__ import annotations
@@ -28,7 +29,10 @@ class Facts:
     module: str
     imports: list[tuple[str, int]] = field(default_factory=list)  # fully qualified targets
     calls: list[tuple[str, int]] = field(default_factory=list)  # resolved dotted callee names
+    call_first_args: list[tuple[str, str, int]] = field(default_factory=list)  # (callee, resolved first argument)
     attributes: list[tuple[str, int]] = field(default_factory=list)  # attribute names accessed
+    names: list[tuple[str, int]] = field(default_factory=list)  # bare names referenced
+    strings: list[tuple[str, int]] = field(default_factory=list)  # string constants, for exact-identifier rules only
     dynamic_imports: list[tuple[str, int]] = field(default_factory=list)  # string arguments to import calls
 
 
@@ -63,6 +67,10 @@ def scan(source: str, module: str, is_package: bool = False) -> Facts:
                 aliases[name.asname or name.name] = full
         elif isinstance(node, ast.Attribute):
             facts.attributes.append((node.attr, node.lineno))
+        elif isinstance(node, ast.Name):
+            facts.names.append((node.id, node.lineno))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            facts.strings.append((node.value, node.lineno))
 
     def dotted(expr: ast.AST) -> str | None:
         if isinstance(expr, ast.Name):
@@ -77,6 +85,10 @@ def scan(source: str, module: str, is_package: bool = False) -> Facts:
             name = dotted(node.func)
             if name:
                 facts.calls.append((name, node.lineno))
+                if node.args:
+                    first = dotted(node.args[0])
+                    if first:
+                        facts.call_first_args.append((name, first, node.lineno))
             # Only a string passed to a recognized import call is a dynamic import;
             # docstrings and other strings that merely mention a package are not.
             if name in DYNAMIC_IMPORT_CALLS and node.args:
@@ -162,10 +174,48 @@ def rule_canonical_purity(facts: Facts) -> list[str]:
     return found
 
 
+GATE_MODULE = "baec_app.application.approval"
+GATE_KEY = "_GATE_KEY"
+
+
+def _is_symbol(dotted_name: str, symbol: str) -> bool:
+    return dotted_name == symbol or dotted_name.endswith("." + symbol)
+
+
+def rule_r4_gate_key(facts: Facts) -> list[str]:
+    """_GATE_KEY is private to approval.py: no import, name, attribute, or string reference elsewhere."""
+    if facts.module == GATE_MODULE:
+        return []
+    found = [f"{facts.module}:{line} imports {name}" for name, line in facts.imports if _is_symbol(name, GATE_KEY)]
+    found += [f"{facts.module}:{line} names {GATE_KEY}" for name, line in facts.names if name == GATE_KEY]
+    found += [f"{facts.module}:{line} accesses .{GATE_KEY}" for attr, line in facts.attributes if attr == GATE_KEY]
+    found += [f"{facts.module}:{line} spells {GATE_KEY!r}" for text, line in facts.strings if text == GATE_KEY]
+    return found
+
+
+def rule_r4_human_approval_construction(facts: Facts) -> list[str]:
+    """Only approval.py constructs HumanApproval, directly or through __new__."""
+    if facts.module == GATE_MODULE:
+        return []
+    found = [
+        f"{facts.module}:{line} calls {name}"
+        for name, line in facts.calls
+        if _is_symbol(name, "HumanApproval") or _is_symbol(name, "HumanApproval.__new__")
+    ]
+    found += [
+        f"{facts.module}:{line} calls {name}({first})"
+        for name, first, line in facts.call_first_args
+        if _is_symbol(name, "__new__") and _is_symbol(first, "HumanApproval")
+    ]
+    return found
+
+
 RULES = {
     "R6 layering": rule_r6_layering,
     "R7 data-free foundation modules": rule_r7_data_free,
     "canonical purity": rule_canonical_purity,
+    "R4 gate key private to approval.py": rule_r4_gate_key,
+    "R4 HumanApproval constructed only in approval.py": rule_r4_human_approval_construction,
 }
 
 
@@ -178,6 +228,16 @@ def test_scanner_finds_the_production_packages():
     assert "scripts.seed_demo" in names
     assert not any(_in_package(name, "tests") for name in names)
     assert set(DATA_FREE_MODULES) <= names  # the rule is not vacuous
+    assert GATE_MODULE in names
+
+
+def test_the_gate_module_itself_holds_and_uses_the_sentinel():
+    """Positive control: the R4 rules would see these references if they were anywhere else."""
+    gate = dict(production_modules())[GATE_MODULE]
+    assert any(name == GATE_KEY for name, _ in gate.names)
+    assert any(_is_symbol(name, "HumanApproval") for name, _ in gate.calls)
+    elsewhere = scan((REPO_ROOT / "baec_app/application/approval.py").read_text(encoding="utf-8"), "baec_app.application.dormancy")
+    assert rule_r4_gate_key(elsewhere) and rule_r4_human_approval_construction(elsewhere)
 
 
 @pytest.mark.parametrize("rule", RULES.values(), ids=RULES.keys())
@@ -220,6 +280,48 @@ VIOLATIONS = {
         "baec_app.application.requests",
         "import importlib\nimportlib.import_module('baec_app.data')",
         rule_r7_data_free,
+    ),
+    "gate key imported": ("baec_app.application.dormancy", "from baec_app.application.approval import _GATE_KEY", rule_r4_gate_key),
+    "gate key imported relatively with alias": (
+        "baec_app.application.dormancy",
+        "from .approval import _GATE_KEY as key",
+        rule_r4_gate_key,
+    ),
+    "gate key as module attribute": (
+        "baec_app.application.facades",
+        "import baec_app.application.approval as a\nk = a._GATE_KEY",
+        rule_r4_gate_key,
+    ),
+    "gate key through getattr": (
+        "baec_app.interfaces.ui",
+        "from baec_app.application import approval\nk = getattr(approval, '_GATE_KEY')",
+        rule_r4_gate_key,
+    ),
+    "gate key in an authority module": ("baec_app.application.authority", "x = _GATE_KEY", rule_r4_gate_key),
+    "HumanApproval constructed": (
+        "baec_app.application.dormancy",
+        "from baec_app.application.approval import HumanApproval\nHumanApproval('a', 'r', 's', 'u', 'd', t, _key=k)",
+        rule_r4_human_approval_construction,
+    ),
+    "HumanApproval constructed via alias": (
+        "baec_app.application.account_state",
+        "from .approval import HumanApproval as Approval\nApproval(*fields)",
+        rule_r4_human_approval_construction,
+    ),
+    "HumanApproval constructed via module attribute": (
+        "baec_app.application.facades",
+        "import baec_app.application.approval as gate\ngate.HumanApproval(*fields)",
+        rule_r4_human_approval_construction,
+    ),
+    "HumanApproval.__new__": (
+        "baec_app.application.authority",
+        "from baec_app.application.approval import HumanApproval\nHumanApproval.__new__(HumanApproval)",
+        rule_r4_human_approval_construction,
+    ),
+    "object.__new__(HumanApproval)": (
+        "baec_app.interfaces.ui",
+        "from baec_app.application.approval import HumanApproval as H\nobject.__new__(H)",
+        rule_r4_human_approval_construction,
     ),
     "data imports application": ("baec_app.data.x", "import baec_app.application.requests", rule_r6_layering),
     "data imports application relatively": ("baec_app.data.x", "from ..application.errors import ApplicationError", rule_r6_layering),
@@ -265,6 +367,18 @@ ALLOWED = {
         rule_r7_data_free,
     ),
     "a string passed to an unrelated call": ("baec_app.domain.x", "print('baec_app.data')", rule_r6_layering),
+    "approval.py uses its own sentinel": (GATE_MODULE, "_GATE_KEY = object()\nHumanApproval(*f, _key=_GATE_KEY)", rule_r4_gate_key),
+    "approval.py constructs approvals": (GATE_MODULE, "HumanApproval(*f, _key=_GATE_KEY)", rule_r4_human_approval_construction),
+    "isinstance and annotations of HumanApproval": (
+        "baec_app.application.dormancy",
+        "from baec_app.application.approval import HumanApproval\ndef f(a: HumanApproval) -> bool:\n    return isinstance(a, HumanApproval)",
+        rule_r4_human_approval_construction,
+    ),
+    "a docstring mentioning the gate key": (
+        "baec_app.application.dormancy",
+        '"""The _GATE_KEY stays private to approval.py."""',
+        rule_r4_gate_key,
+    ),
 }
 
 

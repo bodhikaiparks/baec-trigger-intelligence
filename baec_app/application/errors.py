@@ -16,3 +16,47 @@ class ApplicationValidationError(ApplicationError, ValueError):
 
 class CanonicalizationError(ApplicationValidationError):
     """A value cannot be represented in the canonical request serialization."""
+
+
+class HumanActionError(ApplicationError):
+    """The human-action context is invalid: nothing is approved, redeemed, or consumed."""
+
+
+class SessionNotRecognized(HumanActionError):
+    """The session is unknown, closed, or not the exact object this gate issued."""
+
+
+class RequestNotRecognized(HumanActionError):
+    """The request is unknown, invalidated, already redeemed, or belongs to another session."""
+
+
+class RequestAlreadyRegistered(HumanActionError):
+    """A request with this identifier is already registered."""
+
+
+class RequestAlreadyApproved(HumanActionError):
+    """The request already has its one approval."""
+
+
+class DigestMismatch(HumanActionError):
+    """The displayed, stored, recomputed, or approved digest does not match."""
+
+
+class ApprovalNotRecognized(HumanActionError):
+    """The approval is not the exact object this gate issued."""
+
+
+class ApprovalAlreadyUsed(HumanActionError):
+    """The approval has already been redeemed."""
+
+
+class ApprovalKindMismatch(HumanActionError):
+    """The approval is for a different kind of request than the one being executed."""
+
+
+class ProposalNotAuthoritative(ApplicationError):
+    """Something other than a gate-issued HumanApproval was presented as authority.
+
+    An authority-boundary violation, not a failure of an otherwise legitimate
+    human-action context, so it is not a HumanActionError.
+    """
