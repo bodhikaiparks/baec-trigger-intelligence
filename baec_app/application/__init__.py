@@ -41,6 +41,12 @@ from baec_app.application.proposals import (
 )
 from baec_app.application.requests import ApprovalRequest, ClassificationPreview, RequestKind
 
+# Read-model result types and read-path errors returned or raised through the
+# public read surface (ReadService, open_read_connection). Re-exported so
+# interface code never imports the data layer; definitions are unchanged.
+from baec_app.data.database import DatabaseVersionError, PersistenceIntegrityError, RepositoryNotFoundError
+from baec_app.data.records import PersistedDormancyJudgment, SourceInteraction, TransitionHistoryEntry
+
 __all__ = [
     "Actor",
     "ApplicationError",
@@ -53,6 +59,7 @@ __all__ = [
     "ClassificationPreview",
     "Clock",
     "ConfirmationProposal",
+    "DatabaseVersionError",
     "DigestMismatch",
     "DormancyJudgmentProposal",
     "HumanActionError",
@@ -64,6 +71,8 @@ __all__ = [
     "MoveToDormantProposal",
     "MoveToNoPlausiblePathProposal",
     "NotConfirmable",
+    "PersistedDormancyJudgment",
+    "PersistenceIntegrityError",
     "ProposalFacade",
     "ProposalNotAuthoritative",
     "ProposalOrigin",
@@ -71,13 +80,16 @@ __all__ = [
     "ReadOnlyConnectionRequired",
     "ReadService",
     "ReferenceMismatch",
+    "RepositoryNotFoundError",
     "RequestAlreadyApproved",
     "RequestAlreadyRegistered",
     "RequestKind",
     "RequestNotCoherent",
     "RequestNotRecognized",
     "SessionNotRecognized",
+    "SourceInteraction",
     "SystemClock",
+    "TransitionHistoryEntry",
     "UuidIdFactory",
     "build_command_facade",
     "build_proposal_facade",
