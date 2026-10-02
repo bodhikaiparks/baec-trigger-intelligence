@@ -47,8 +47,9 @@ class Flow:
         self.request = self.add_request("REQ-1", kind)
 
     def add_request(self, request_id, kind=ACTIVE, session=None, **overrides):
-        request = request_for(kind, request_id=request_id, session_id=(session or self.session).session_id, **overrides)
-        self.gate.register(request)
+        session = session or self.session
+        request = request_for(kind, request_id=request_id, session_id=session.session_id, **overrides)
+        self.gate.register(session, request)
         return request
 
     def approve(self, request=None, session=None):
@@ -281,23 +282,59 @@ def test_duplicate_identifiers_from_a_faulty_id_factory_are_refused():
 
 def test_a_request_id_can_be_registered_only_once(flow):
     with pytest.raises(RequestAlreadyRegistered):
-        flow.gate.register(flow.request)
+        flow.gate.register(flow.session, flow.request)
     different_content = request_for(ACTIVE, session_id=flow.session.session_id, payload=active_payload(account_id="ACC-2"))
     with pytest.raises(RequestAlreadyRegistered):
-        flow.gate.register(different_content)
+        flow.gate.register(flow.session, different_content)
     genuine_redeems(flow, flow.approve())  # the original registration is untouched
 
 
-def test_registration_requires_an_open_session(flow):
+def _registered(flow):
+    return dict(flow.gate._requests)
+
+
+def test_a_look_alike_session_with_a_live_id_cannot_register(flow):
+    twin = _look_alike(flow.session)
+    assert (twin.session_id, twin.actor, twin.opened_at) == (flow.session.session_id, flow.session.actor, flow.session.opened_at)
+    before = _registered(flow)
+    request = request_for(ACTIVE, request_id="REQ-9", session_id=twin.session_id)
     with pytest.raises(SessionNotRecognized):
-        flow.gate.register(request_for(ACTIVE, request_id="REQ-9", session_id="NO-SUCH-SESSION"))
+        flow.gate.register(twin, request)
+    assert _registered(flow) == before
+    flow.gate.register(flow.session, request)  # the genuine session still works
+    assert flow.gate.approve(flow.session, "REQ-9", displayed_digest=request.digest).request_id == "REQ-9"
+
+
+@pytest.mark.parametrize("value", [None, "T-0001", {"session_id": "T-0001"}], ids=["None", "id string", "mapping"])
+def test_registration_requires_a_session_object(flow, value):
+    before = _registered(flow)
+    with pytest.raises(SessionNotRecognized):
+        flow.gate.register(value, request_for(ACTIVE, request_id="REQ-9", session_id=flow.session.session_id))
+    assert _registered(flow) == before
+
+
+def test_registration_requires_an_open_session(flow):
+    flow.gate.close_session(flow.session)
+    with pytest.raises(SessionNotRecognized):
+        flow.gate.register(flow.session, request_for(ACTIVE, request_id="REQ-9", session_id=flow.session.session_id))
+
+
+def test_a_request_of_another_session_cannot_be_registered_in_this_one(flow):
+    other = flow.gate.open_session("reviewer-2")
+    before = _registered(flow)
+    for session, owner in ((flow.session, other), (other, flow.session)):
+        with pytest.raises(RequestNotRecognized):
+            flow.gate.register(session, request_for(ACTIVE, request_id="REQ-9", session_id=owner.session_id))
+    with pytest.raises(RequestNotRecognized):
+        flow.gate.register(flow.session, request_for(ACTIVE, request_id="REQ-9", session_id="NO-SUCH-SESSION"))
+    assert _registered(flow) == before
 
 
 @pytest.mark.parametrize("value", [None, {"request_id": "REQ-9"}, active_payload()], ids=["None", "mapping", "payload"])
 def test_registering_something_that_is_not_an_approval_request_is_a_validation_error(flow, value):
     """Wrong-type input is a validation failure; RequestNotRecognized is for request identity and lifecycle."""
     with pytest.raises(ApplicationValidationError) as raised:
-        flow.gate.register(value)
+        flow.gate.register(flow.session, value)
     assert not isinstance(raised.value, HumanActionError)
 
 

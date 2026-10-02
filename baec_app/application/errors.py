@@ -5,6 +5,13 @@ they propagate unchanged. These classes cover only what the application
 layer itself decides.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from baec_app.domain.baec_rules import ClassificationResult
+
 
 class ApplicationError(Exception):
     """Base class for every application-layer error."""
@@ -59,4 +66,23 @@ class ProposalNotAuthoritative(ApplicationError):
 
     An authority-boundary violation, not a failure of an otherwise legitimate
     human-action context, so it is not a HumanActionError.
+    """
+
+
+class NotConfirmable(ApplicationError):
+    """The locked classifier did not return CONFIRMED_BAEC, so no confirmation request is opened.
+
+    Carries the classifier's own result; the message is its canonical reason text, unchanged.
+    """
+
+    def __init__(self, result: ClassificationResult) -> None:
+        super().__init__(result.reason_text)
+        self.result = result
+
+
+class ReferenceMismatch(ApplicationError):
+    """A referenced object exists but is not related as the request claims.
+
+    Used only for relations the locked domain cannot judge (interaction-to-account
+    ownership; judgment-to-BAEC membership). Everything the domain judges stays with it.
     """

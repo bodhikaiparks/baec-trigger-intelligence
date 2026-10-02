@@ -118,13 +118,14 @@ class HumanConfirmationGate:
 
     # --- requests and approvals -------------------------------------------------
 
-    def register(self, request: ApprovalRequest) -> None:
-        """Record a request for display and approval. Grants nothing."""
-        if type(request) is not ApprovalRequest:
-            raise ApplicationValidationError("only an ApprovalRequest can be registered")
+    def register(self, session: InteractionSession, request: ApprovalRequest) -> None:
+        """Record a request for display and approval in the exact open session. Grants nothing."""
         with self._lock:
-            if request.session_id not in self._sessions:
-                raise SessionNotRecognized("the request's session is not open")
+            session = self._require_open_session(session)
+            if type(request) is not ApprovalRequest:
+                raise ApplicationValidationError("only an ApprovalRequest can be registered")
+            if request.session_id != session.session_id:
+                raise RequestNotRecognized("the request belongs to a different session")
             if request.request_id in self._requests:
                 raise RequestAlreadyRegistered(f"request {request.request_id!r} is already registered")
             self._requests[request.request_id] = _Entry(request)

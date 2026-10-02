@@ -5,17 +5,22 @@ tests/ is exempt. Each rule is also run against synthetic violating source
 to prove the scanner reports it. Rules are added increment by increment;
 4A covers layering (R6), data-free foundation modules (R7), canonical
 serialization purity, and the two Phase 4 proposal origins; 4B adds R4
-(the gate sentinel and HumanApproval construction stay inside approval.py).
+(the gate sentinel and HumanApproval construction stay inside approval.py);
+4C adds R1, R2, and R5 (HumanAuthorization construction and authority
+imports) and the (self, approval) command signatures.
 """
 
 from __future__ import annotations
 
 import ast
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
+from baec_app.application.classification import ClassificationService
+from baec_app.application.dormancy import DormancyJudgmentService
 from baec_app.application.proposals import ProposalOrigin
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +33,7 @@ PRODUCTION_ROOTS = (REPO_ROOT / "baec_app", REPO_ROOT / "scripts")
 class Facts:
     module: str
     imports: list[tuple[str, int]] = field(default_factory=list)  # fully qualified targets
+    runtime_imports: list[tuple[str, int]] = field(default_factory=list)  # imports outside `if TYPE_CHECKING:`
     calls: list[tuple[str, int]] = field(default_factory=list)  # resolved dotted callee names
     call_first_args: list[tuple[str, str, int]] = field(default_factory=list)  # (callee, resolved first argument)
     attributes: list[tuple[str, int]] = field(default_factory=list)  # attribute names accessed
@@ -37,6 +43,12 @@ class Facts:
 
 
 DYNAMIC_IMPORT_CALLS = ("importlib.import_module", "importlib.__import__", "__import__")
+
+
+def _is_type_checking(test: ast.AST) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
 
 
 def _resolve_relative(module: str, is_package: bool, level: int, target: str | None) -> str:
@@ -51,19 +63,32 @@ def scan(source: str, module: str, is_package: bool = False) -> Facts:
     tree = ast.parse(source)
     facts = Facts(module)
     aliases: dict[str, str] = {}
+    type_checking_only = {
+        id(inner)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and _is_type_checking(node.test)
+        for statement in node.body
+        for inner in ast.walk(statement)
+    }
+
+    def add_import(target: str, node: ast.AST) -> None:
+        facts.imports.append((target, node.lineno))
+        if id(node) not in type_checking_only:
+            facts.runtime_imports.append((target, node.lineno))
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for name in node.names:
-                facts.imports.append((name.name, node.lineno))
+                add_import(name.name, node)
                 aliases[name.asname or name.name.split(".")[0]] = name.name if name.asname else name.name.split(".")[0]
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
             if node.level:
                 base = _resolve_relative(module, is_package, node.level, node.module)
-            facts.imports.append((base, node.lineno))
+            add_import(base, node)
             for name in node.names:
                 full = f"{base}.{name.name}" if base else name.name
-                facts.imports.append((full, node.lineno))
+                add_import(full, node)
                 aliases[name.asname or name.name] = full
         elif isinstance(node, ast.Attribute):
             facts.attributes.append((node.attr, node.lineno))
@@ -210,12 +235,59 @@ def rule_r4_human_approval_construction(facts: Facts) -> list[str]:
     return found
 
 
+AUTHORIZATION_CONSTRUCTORS = (
+    "baec_app.data.repository",  # rehydration of stored authorizations (Phase 3)
+    "baec_app.data.seed",  # synthetic seed fixtures (Phase 3)
+    "baec_app.application.authority",  # the only application construction site
+)
+AUTHORITY_MODULE = "baec_app.application.authority"
+AUTHORITY_IMPORTERS = ("baec_app.application.classification", "baec_app.application.dormancy")  # 4D adds account_state
+
+
+def rule_r1_authorization_construction(facts: Facts) -> list[str]:
+    """HumanAuthorization is constructed only in the approved modules (directly, by alias, or via __new__)."""
+    if facts.module in AUTHORIZATION_CONSTRUCTORS:
+        return []
+    found = [
+        f"{facts.module}:{line} calls {name}"
+        for name, line in facts.calls
+        if _is_symbol(name, "HumanAuthorization") or _is_symbol(name, "HumanAuthorization.__new__")
+    ]
+    found += [
+        f"{facts.module}:{line} calls {name}({first})"
+        for name, first, line in facts.call_first_args
+        if _is_symbol(name, "__new__") and _is_symbol(first, "HumanAuthorization")
+    ]
+    return found
+
+
+def rule_r2_runtime_authorization_import(facts: Facts) -> list[str]:
+    """Inside the application layer, only authority.py imports HumanAuthorization at runtime."""
+    if not _in_package(facts.module, "baec_app.application") or facts.module == AUTHORITY_MODULE:
+        return []
+    return [
+        f"{facts.module}:{line} imports {name} at runtime"
+        for name, line in facts.runtime_imports
+        if _is_symbol(name, "HumanAuthorization")
+    ]
+
+
+def rule_r5_authority_importers(facts: Facts) -> list[str]:
+    """application.authority is imported only by the command services."""
+    if facts.module in AUTHORITY_IMPORTERS or facts.module == AUTHORITY_MODULE:
+        return []
+    return imports_package(facts, AUTHORITY_MODULE)
+
+
 RULES = {
     "R6 layering": rule_r6_layering,
     "R7 data-free foundation modules": rule_r7_data_free,
     "canonical purity": rule_canonical_purity,
     "R4 gate key private to approval.py": rule_r4_gate_key,
     "R4 HumanApproval constructed only in approval.py": rule_r4_human_approval_construction,
+    "R1 HumanAuthorization constructed only in approved modules": rule_r1_authorization_construction,
+    "R2 HumanAuthorization runtime-imported only by authority.py": rule_r2_runtime_authorization_import,
+    "R5 authority imported only by the command services": rule_r5_authority_importers,
 }
 
 
@@ -229,6 +301,42 @@ def test_scanner_finds_the_production_packages():
     assert not any(_in_package(name, "tests") for name in names)
     assert set(DATA_FREE_MODULES) <= names  # the rule is not vacuous
     assert GATE_MODULE in names
+
+
+def test_the_approved_authorization_constructors_are_real_and_authority_is_used():
+    """Positive controls: R1, R2 and R5 would fire on these modules' own code anywhere else."""
+    modules = dict(production_modules())
+    for module in AUTHORIZATION_CONSTRUCTORS:
+        assert any(_is_symbol(name, "HumanAuthorization") for name, _ in modules[module].calls), module
+    authority_source = (REPO_ROOT / "baec_app/application/authority.py").read_text(encoding="utf-8")
+    as_facade = scan(authority_source, "baec_app.application.facades")
+    assert rule_r1_authorization_construction(as_facade) and rule_r2_runtime_authorization_import(as_facade)
+    for module in AUTHORITY_IMPORTERS:
+        assert imports_package(modules[module], AUTHORITY_MODULE), module
+    classification_source = (REPO_ROOT / "baec_app/application/classification.py").read_text(encoding="utf-8")
+    assert rule_r5_authority_importers(scan(classification_source, "baec_app.application.facades"))
+
+
+COMMANDS = {
+    "ClassificationService.confirm": ClassificationService.confirm,
+    "DormancyJudgmentService.record": DormancyJudgmentService.record,
+}
+AUTHORITY_PARAMETER_NAMES = {"authorization", "approved", "authorized_by", "authorized_at", "actor", "actor_id", "confirmation"}
+
+
+@pytest.mark.parametrize("command", COMMANDS.values(), ids=COMMANDS.keys())
+def test_command_signatures_are_exactly_self_and_approval(command):
+    assert list(inspect.signature(command).parameters) == ["self", "approval"]
+
+
+@pytest.mark.parametrize("service", [ClassificationService, DormancyJudgmentService], ids=lambda c: c.__name__)
+def test_no_public_service_method_accepts_authority_by_name_or_annotation(service):
+    for name, method in inspect.getmembers(service, inspect.isfunction):
+        if name.startswith("_"):
+            continue
+        for parameter in inspect.signature(method).parameters.values():
+            assert parameter.name not in AUTHORITY_PARAMETER_NAMES, (name, parameter.name)
+            assert "HumanAuthorization" not in str(parameter.annotation), (name, parameter.name)
 
 
 def test_the_gate_module_itself_holds_and_uses_the_sentinel():
@@ -323,6 +431,62 @@ VIOLATIONS = {
         "from baec_app.application.approval import HumanApproval as H\nobject.__new__(H)",
         rule_r4_human_approval_construction,
     ),
+    "HumanAuthorization constructed in a service": (
+        "baec_app.application.dormancy",
+        "from baec_app.domain.models import HumanAuthorization\nHumanAuthorization('u', t, a, 's')",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization constructed via alias": (
+        "baec_app.application.classification",
+        "from baec_app.domain.models import HumanAuthorization as Grant\nGrant('u', t, a, 's')",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization constructed module-qualified": (
+        "baec_app.interfaces.ui",
+        "import baec_app.domain.models as m\nm.HumanAuthorization('u', t, a, 's')",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization constructed relatively in the domain": (
+        "baec_app.domain.state_machine",
+        "from .models import HumanAuthorization\nHumanAuthorization('u', t, a, 's')",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization via object.__new__": (
+        "baec_app.application.facades",
+        "from baec_app.domain import models\nobject.__new__(models.HumanAuthorization)",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization runtime import in a service": (
+        "baec_app.application.dormancy",
+        "from baec_app.domain.models import HumanAuthorization",
+        rule_r2_runtime_authorization_import,
+    ),
+    "HumanAuthorization runtime import inside a function": (
+        "baec_app.application.classification",
+        "def f():\n    from baec_app.domain.models import HumanAuthorization as H\n    return H",
+        rule_r2_runtime_authorization_import,
+    ),
+    "HumanAuthorization imported in the else branch of TYPE_CHECKING": (
+        "baec_app.application.requests",
+        "if TYPE_CHECKING:\n    pass\nelse:\n    from baec_app.domain.models import HumanAuthorization",
+        rule_r2_runtime_authorization_import,
+    ),
+    "authority imported by a facade": ("baec_app.application.facades", "from baec_app.application import authority", rule_r5_authority_importers),
+    "authority function imported relatively": (
+        "baec_app.application.account_state",
+        "from .authority import authorize as grant",
+        rule_r5_authority_importers,
+    ),
+    "authority imported by an interface": (
+        "baec_app.interfaces.mcp",
+        "import baec_app.application.authority as a",
+        rule_r5_authority_importers,
+    ),
+    "authority imported dynamically": (
+        "baec_app.application.facades",
+        "import importlib\nimportlib.import_module('baec_app.application.authority')",
+        rule_r5_authority_importers,
+    ),
     "data imports application": ("baec_app.data.x", "import baec_app.application.requests", rule_r6_layering),
     "data imports application relatively": ("baec_app.data.x", "from ..application.errors import ApplicationError", rule_r6_layering),
     "requests imports data": ("baec_app.application.requests", "from baec_app.data.repository import Repository", rule_r7_data_free),
@@ -374,6 +538,43 @@ ALLOWED = {
         "from baec_app.application.approval import HumanApproval\ndef f(a: HumanApproval) -> bool:\n    return isinstance(a, HumanApproval)",
         rule_r4_human_approval_construction,
     ),
+    "authority.py constructs HumanAuthorization": (
+        AUTHORITY_MODULE,
+        "from baec_app.domain.models import HumanAuthorization\nHumanAuthorization('u', t, a, 's')",
+        rule_r1_authorization_construction,
+    ),
+    "repository rehydrates HumanAuthorization": (
+        "baec_app.data.repository",
+        "from baec_app.domain.models import HumanAuthorization\nHumanAuthorization('u', t, a, 's')",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization used as a type only": (
+        "baec_app.application.dormancy",
+        "def f(a: 'HumanAuthorization') -> None:\n    return isinstance(a, object)",
+        rule_r1_authorization_construction,
+    ),
+    "HumanAuthorization imported under TYPE_CHECKING": (
+        "baec_app.application.classification",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from baec_app.domain.models import HumanAuthorization",
+        rule_r2_runtime_authorization_import,
+    ),
+    "HumanAuthorization imported under typing.TYPE_CHECKING": (
+        "baec_app.application.dormancy",
+        "import typing\nif typing.TYPE_CHECKING:\n    from baec_app.domain.models import HumanAuthorization",
+        rule_r2_runtime_authorization_import,
+    ),
+    "authority.py imports HumanAuthorization": (
+        AUTHORITY_MODULE,
+        "from baec_app.domain.models import HumanAuthorization",
+        rule_r2_runtime_authorization_import,
+    ),
+    "domain imports HumanAuthorization (R2 is application-only)": (
+        "baec_app.domain.state_machine",
+        "from baec_app.domain.models import HumanAuthorization",
+        rule_r2_runtime_authorization_import,
+    ),
+    "classification imports authority": ("baec_app.application.classification", "from baec_app.application import authority", rule_r5_authority_importers),
+    "dormancy imports authority": ("baec_app.application.dormancy", "from .authority import authorize", rule_r5_authority_importers),
     "a docstring mentioning the gate key": (
         "baec_app.application.dormancy",
         '"""The _GATE_KEY stays private to approval.py."""',
