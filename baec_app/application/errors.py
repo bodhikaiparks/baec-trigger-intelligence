@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from baec_app.domain.baec_rules import ClassificationResult
+    from baec_app.domain.state_machine import TransitionResult
 
 
 class ApplicationError(Exception):
@@ -86,3 +87,14 @@ class ReferenceMismatch(ApplicationError):
     Used only for relations the locked domain cannot judge (interaction-to-account
     ownership; judgment-to-BAEC membership). Everything the domain judges stays with it.
     """
+
+
+class RequestNotCoherent(ApplicationError):
+    """The locked state machine would reject this transition for a reason other than missing authorization.
+
+    Carries the locked preview TransitionResult unchanged; it, not the message, is the source of truth.
+    """
+
+    def __init__(self, result: TransitionResult) -> None:
+        super().__init__(result.rejection_text)
+        self.result = result

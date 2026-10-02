@@ -5,6 +5,7 @@ from itertools import product
 
 import pytest
 
+from baec_app.application.account_state import AccountStateService
 from baec_app.application.approval import HumanConfirmationGate
 from baec_app.application.classification import ClassificationService
 from baec_app.application.dormancy import DormancyJudgmentService
@@ -39,6 +40,7 @@ class Services:
         self.gate = HumanConfirmationGate(self.clock, self.ids)
         self.classification = ClassificationService(repository, self.gate, self.clock, self.ids)
         self.dormancy = DormancyJudgmentService(repository, self.gate, self.clock, self.ids)
+        self.state = AccountStateService(repository, self.gate, self.clock, self.ids)
         self.session = self.gate.open_session("reviewer-1")
 
     def approve(self, request):
@@ -199,3 +201,52 @@ def test_a_look_alike_session_cannot_open_a_judgment_request(services, connectio
     assert services.gate._requests == {}
     assert dump(connection) == before
     assert services.dormancy.record(services.approve(services.open_judgment())).judgment.baec_id == "B-1"
+
+
+# --- the two-step dormancy flow (4D): judgment and transition are separate human actions -----
+
+
+def test_judgment_then_transition_are_two_independent_human_actions(services, repo):
+    from baec_app.application.errors import ReferenceMismatch
+    from baec_app.domain.enums import AccountState, TransitionUnresolvedKind
+
+    # Before any judgment exists, no transition request can be opened.
+    with pytest.raises(ReferenceMismatch):
+        services.state.open_move_to_conditionally_dormant_request(services.session, "ACC-1", baec_id="B-1", judgment_id=1)
+
+    # Human action 1: the judgment.
+    judgment_request = services.open_judgment(plausibility=ReviewAnswer.YES, addressability=ReviewAnswer.UNKNOWN)
+    services.clock.advance(minutes=1)
+    judgment_approval = services.approve(judgment_request)
+    persisted = services.dormancy.record(judgment_approval)
+    assert repo.get_account("ACC-1").state is None  # recording a judgment changes no state
+
+    # The judgment approval is spent and cannot also authorize the transition.
+    with pytest.raises(ApprovalAlreadyUsed):
+        services.state.move_to_conditionally_dormant(judgment_approval)
+
+    # Human action 2: a separate transition request and a separate approval.
+    transition_request = services.state.open_move_to_conditionally_dormant_request(
+        services.session, "ACC-1", baec_id="B-1", judgment_id=persisted.judgment_id
+    )
+    services.clock.advance(minutes=1)
+    transition_approval = services.approve(transition_request)
+    assert transition_approval.approval_id != judgment_approval.approval_id
+    assert transition_approval.approved_at > judgment_approval.approved_at
+    result = services.state.move_to_conditionally_dormant(transition_approval)
+
+    assert result.allowed and result.to_state is AccountState.CONDITIONALLY_DORMANT
+    assert result.unresolved == (TransitionUnresolvedKind.ADDRESSABILITY_UNKNOWN,)
+    entry = repo.get_transition_history("ACC-1")[-1]
+    assert entry.judgment_id == persisted.judgment_id
+    assert persisted.judgment.authorization.action is AuthorizationAction.RECORD_DORMANCY_JUDGMENT
+    assert entry.authorization.action is AuthorizationAction.CHANGE_ACCOUNT_STATE
+    assert entry.authorization.authorized_at == transition_approval.approved_at != persisted.judgment.authorization.authorized_at
+
+
+def test_an_unapproved_judgment_request_does_not_enable_a_transition_request(services, repo):
+    from baec_app.application.errors import ReferenceMismatch
+
+    services.open_judgment()  # opened but never approved or recorded
+    with pytest.raises(ReferenceMismatch):
+        services.state.open_move_to_conditionally_dormant_request(services.session, "ACC-1", baec_id="B-1", judgment_id=1)

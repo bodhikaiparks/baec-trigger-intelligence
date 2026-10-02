@@ -7,7 +7,9 @@ to prove the scanner reports it. Rules are added increment by increment;
 serialization purity, and the two Phase 4 proposal origins; 4B adds R4
 (the gate sentinel and HumanApproval construction stay inside approval.py);
 4C adds R1, R2, and R5 (HumanAuthorization construction and authority
-imports) and the (self, approval) command signatures.
+imports) and the (self, approval) command signatures; 4D admits
+account_state.py to R5 and limits application use of TransitionRejectionKind
+to AUTHORIZATION_MISSING.
 """
 
 from __future__ import annotations
@@ -19,9 +21,11 @@ from pathlib import Path
 
 import pytest
 
+from baec_app.application.account_state import AccountStateService
 from baec_app.application.classification import ClassificationService
 from baec_app.application.dormancy import DormancyJudgmentService
 from baec_app.application.proposals import ProposalOrigin
+from baec_app.domain.enums import TransitionRejectionKind
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_ROOTS = (REPO_ROOT / "baec_app", REPO_ROOT / "scripts")
@@ -39,10 +43,22 @@ class Facts:
     attributes: list[tuple[str, int]] = field(default_factory=list)  # attribute names accessed
     names: list[tuple[str, int]] = field(default_factory=list)  # bare names referenced
     strings: list[tuple[str, int]] = field(default_factory=list)  # string constants, for exact-identifier rules only
+    references: list[tuple[str, str | None, int]] = field(default_factory=list)  # (resolved name, member read from it)
+    getattr_strings: list[tuple[str, str, int]] = field(default_factory=list)  # getattr(object, "literal")
+    value_comparisons: list[tuple[str, int]] = field(default_factory=list)  # literals compared with some `x.value`
     dynamic_imports: list[tuple[str, int]] = field(default_factory=list)  # string arguments to import calls
 
 
 DYNAMIC_IMPORT_CALLS = ("importlib.import_module", "importlib.__import__", "__import__")
+
+
+def _string_literals(node: ast.AST) -> list[str]:
+    """A string constant, or the string constants of a literal set, tuple, or list."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+        return [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return []
 
 
 def _is_type_checking(test: ast.AST) -> bool:
@@ -106,6 +122,23 @@ def scan(source: str, module: str, is_package: bool = False) -> Facts:
         return None
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            if any(isinstance(o, ast.Attribute) and o.attr == "value" for o in operands):
+                for operand in operands:
+                    for literal in _string_literals(operand):
+                        facts.value_comparisons.append((literal, node.lineno))
+
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            resolved = dotted(node)
+            if resolved:
+                parent = parents.get(node)
+                member = parent.attr if isinstance(parent, ast.Attribute) and parent.value is node else None
+                facts.references.append((resolved, member, node.lineno))
+
+    for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = dotted(node.func)
             if name:
@@ -116,6 +149,10 @@ def scan(source: str, module: str, is_package: bool = False) -> Facts:
                         facts.call_first_args.append((name, first, node.lineno))
             # Only a string passed to a recognized import call is a dynamic import;
             # docstrings and other strings that merely mention a package are not.
+            if name == "getattr" and len(node.args) >= 2:
+                literal = node.args[1]
+                if isinstance(literal, ast.Constant) and isinstance(literal.value, str):
+                    facts.getattr_strings.append((dotted(node.args[0]) or "", literal.value, node.lineno))
             if name in DYNAMIC_IMPORT_CALLS and node.args:
                 target = node.args[0]
                 if isinstance(target, ast.Constant) and isinstance(target.value, str):
@@ -241,7 +278,11 @@ AUTHORIZATION_CONSTRUCTORS = (
     "baec_app.application.authority",  # the only application construction site
 )
 AUTHORITY_MODULE = "baec_app.application.authority"
-AUTHORITY_IMPORTERS = ("baec_app.application.classification", "baec_app.application.dormancy")  # 4D adds account_state
+AUTHORITY_IMPORTERS = (
+    "baec_app.application.classification",
+    "baec_app.application.dormancy",
+    "baec_app.application.account_state",
+)
 
 
 def rule_r1_authorization_construction(facts: Facts) -> list[str]:
@@ -279,6 +320,43 @@ def rule_r5_authority_importers(facts: Facts) -> list[str]:
     return imports_package(facts, AUTHORITY_MODULE)
 
 
+ALLOWED_REJECTION_MEMBER = "AUTHORIZATION_MISSING"
+REJECTION_ENUM = "TransitionRejectionKind"
+FORBIDDEN_REJECTION_VALUES = {k.value for k in TransitionRejectionKind if k.name != ALLOWED_REJECTION_MEMBER}
+
+
+def rule_rejection_kind_usage(facts: Facts) -> list[str]:
+    """Application code reads TransitionRejectionKind only as .AUTHORIZATION_MISSING.
+
+    Reported: any other member (direct, aliased, module-qualified); any use of
+    the enum that is not exactly .AUTHORIZATION_MISSING, which covers
+    iteration, indexing such as K["SAME_STATE"], and getattr(K, ...); and
+    obtaining the enum itself reflectively, as in getattr(enums,
+    "TransitionRejectionKind"); and comparing or testing membership of any
+    `x.value` against another rejection's value string, as in
+    r.value == "SAME_STATE" or r.value in {"ADDRESSABILITY_NO"}. Ordinary
+    strings and docstrings that merely mention a rejection name are not reported.
+    """
+    if not _in_package(facts.module, "baec_app.application"):
+        return []
+    found = [
+        f"{facts.module}:{line} uses {name}" + (f".{member}" if member else " other than as .AUTHORIZATION_MISSING")
+        for name, member, line in facts.references
+        if _is_symbol(name, REJECTION_ENUM) and member != ALLOWED_REJECTION_MEMBER
+    ]
+    found += [
+        f"{facts.module}:{line} reflectively reads {obj}.{text}"
+        for obj, text, line in facts.getattr_strings
+        if text == REJECTION_ENUM
+    ]
+    found += [
+        f"{facts.module}:{line} compares a .value with rejection value {text!r}"
+        for text, line in facts.value_comparisons
+        if text in FORBIDDEN_REJECTION_VALUES
+    ]
+    return found
+
+
 RULES = {
     "R6 layering": rule_r6_layering,
     "R7 data-free foundation modules": rule_r7_data_free,
@@ -288,6 +366,7 @@ RULES = {
     "R1 HumanAuthorization constructed only in approved modules": rule_r1_authorization_construction,
     "R2 HumanAuthorization runtime-imported only by authority.py": rule_r2_runtime_authorization_import,
     "R5 authority imported only by the command services": rule_r5_authority_importers,
+    "application reads only AUTHORIZATION_MISSING": rule_rejection_kind_usage,
 }
 
 
@@ -320,6 +399,9 @@ def test_the_approved_authorization_constructors_are_real_and_authority_is_used(
 COMMANDS = {
     "ClassificationService.confirm": ClassificationService.confirm,
     "DormancyJudgmentService.record": DormancyJudgmentService.record,
+    "AccountStateService.move_to_conditionally_dormant": AccountStateService.move_to_conditionally_dormant,
+    "AccountStateService.move_to_active_opportunity": AccountStateService.move_to_active_opportunity,
+    "AccountStateService.move_to_no_plausible_path": AccountStateService.move_to_no_plausible_path,
 }
 AUTHORITY_PARAMETER_NAMES = {"authorization", "approved", "authorized_by", "authorized_at", "actor", "actor_id", "confirmation"}
 
@@ -329,7 +411,9 @@ def test_command_signatures_are_exactly_self_and_approval(command):
     assert list(inspect.signature(command).parameters) == ["self", "approval"]
 
 
-@pytest.mark.parametrize("service", [ClassificationService, DormancyJudgmentService], ids=lambda c: c.__name__)
+@pytest.mark.parametrize(
+    "service", [ClassificationService, DormancyJudgmentService, AccountStateService], ids=lambda c: c.__name__
+)
 def test_no_public_service_method_accepts_authority_by_name_or_annotation(service):
     for name, method in inspect.getmembers(service, inspect.isfunction):
         if name.startswith("_"):
@@ -337,6 +421,13 @@ def test_no_public_service_method_accepts_authority_by_name_or_annotation(servic
         for parameter in inspect.signature(method).parameters.values():
             assert parameter.name not in AUTHORITY_PARAMETER_NAMES, (name, parameter.name)
             assert "HumanAuthorization" not in str(parameter.annotation), (name, parameter.name)
+
+
+def test_account_state_reads_authorization_missing_and_nothing_else():
+    """Positive control: the only rejection member account_state.py touches is the allowed one."""
+    facts = dict(production_modules())["baec_app.application.account_state"]
+    used = {member for name, member, _ in facts.references if _is_symbol(name, "TransitionRejectionKind")}
+    assert used == {ALLOWED_REJECTION_MEMBER}
 
 
 def test_the_gate_module_itself_holds_and_uses_the_sentinel():
@@ -473,7 +564,7 @@ VIOLATIONS = {
     ),
     "authority imported by a facade": ("baec_app.application.facades", "from baec_app.application import authority", rule_r5_authority_importers),
     "authority function imported relatively": (
-        "baec_app.application.account_state",
+        "baec_app.application.composition",
         "from .authority import authorize as grant",
         rule_r5_authority_importers,
     ),
@@ -486,6 +577,79 @@ VIOLATIONS = {
         "baec_app.application.facades",
         "import importlib\nimportlib.import_module('baec_app.application.authority')",
         rule_r5_authority_importers,
+    ),
+    "application reads another rejection member": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind\nif TransitionRejectionKind.SAME_STATE in r: pass",
+        rule_rejection_kind_usage,
+    ),
+    "application reads a rejection member through an alias": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind as Why\nx = Why.BAEC_NOT_CURRENT",
+        rule_rejection_kind_usage,
+    ),
+    "application reads a rejection member module-qualified": (
+        "baec_app.application.account_state",
+        "from baec_app.domain import enums\nx = enums.TransitionRejectionKind.PLAUSIBILITY_NOT_YES",
+        rule_rejection_kind_usage,
+    ),
+    "application iterates the rejection kinds": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind\nfor k in TransitionRejectionKind: pass",
+        rule_rejection_kind_usage,
+    ),
+    "application indexes the rejection kinds": (
+        "baec_app.application.dormancy",
+        "from baec_app.domain.enums import TransitionRejectionKind\nk = TransitionRejectionKind['SAME_STATE']",
+        rule_rejection_kind_usage,
+    ),
+    "application getattr on the rejection kinds": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind as K\nk = getattr(K, name)",
+        rule_rejection_kind_usage,
+    ),
+    "application getattr of another rejection member by string": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind\nk = getattr(TransitionRejectionKind, 'SAME_STATE')",
+        rule_rejection_kind_usage,
+    ),
+    "application getattr by string, module-qualified": (
+        "baec_app.application.account_state",
+        "from baec_app.domain import enums\nk = getattr(enums.TransitionRejectionKind, 'BAEC_NOT_CURRENT')",
+        rule_rejection_kind_usage,
+    ),
+    "application indexes the rejection kinds through an alias": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind as Why\nk = Why['ADDRESSABILITY_NO']",
+        rule_rejection_kind_usage,
+    ),
+    ".value == rejection string": (
+        "baec_app.application.account_state",
+        "if r.rejections[0].value == 'ADDRESSABILITY_NO': pass",
+        rule_rejection_kind_usage,
+    ),
+    "rejection string == .value": ("baec_app.application.account_state", "ok = 'SAME_STATE' == k.value", rule_rejection_kind_usage),
+    ".value != rejection string": ("baec_app.application.dormancy", "ok = k.value != 'BAEC_NOT_CURRENT'", rule_rejection_kind_usage),
+    ".value in a set of rejection strings": (
+        "baec_app.application.account_state",
+        "blocked = any(k.value in {'SAME_STATE', 'ADDRESSABILITY_NO'} for k in r.rejections)",
+        rule_rejection_kind_usage,
+    ),
+    ".value not in a tuple of rejection strings": (
+        "baec_app.application.account_state",
+        "ok = k.value not in ('REASON_MISSING',)",
+        rule_rejection_kind_usage,
+    ),
+    ".value in a list with an allowed and a forbidden string": (
+        "baec_app.application.account_state",
+        "ok = k.value in ['AUTHORIZATION_MISSING', 'PLAUSIBILITY_NOT_YES']",
+        rule_rejection_kind_usage,
+    ),
+    "chained comparison with .value": ("baec_app.application.account_state", "ok = a == k.value == 'GROUND_MISSING'", rule_rejection_kind_usage),
+    "application obtains the enum reflectively": (
+        "baec_app.application.account_state",
+        "from baec_app.domain import enums\nk = getattr(enums, 'TransitionRejectionKind').SAME_STATE",
+        rule_rejection_kind_usage,
     ),
     "data imports application": ("baec_app.data.x", "import baec_app.application.requests", rule_r6_layering),
     "data imports application relatively": ("baec_app.data.x", "from ..application.errors import ApplicationError", rule_r6_layering),
@@ -575,6 +739,44 @@ ALLOWED = {
     ),
     "classification imports authority": ("baec_app.application.classification", "from baec_app.application import authority", rule_r5_authority_importers),
     "dormancy imports authority": ("baec_app.application.dormancy", "from .authority import authorize", rule_r5_authority_importers),
+    "account_state imports authority": ("baec_app.application.account_state", "from baec_app.application import authority", rule_r5_authority_importers),
+    "application reads AUTHORIZATION_MISSING": (
+        "baec_app.application.account_state",
+        "from baec_app.domain.enums import TransitionRejectionKind as K\nONLY = (K.AUTHORIZATION_MISSING,)",
+        rule_rejection_kind_usage,
+    ),
+    "a docstring mentioning SAME_STATE": (
+        "baec_app.application.account_state",
+        '"""SAME_STATE, BAEC_NOT_CURRENT and REASON_MISSING are decided by the locked state machine."""',
+        rule_rejection_kind_usage,
+    ),
+    "an ordinary string naming a rejection": (
+        "baec_app.application.account_state",
+        "message = 'SAME_STATE'\nlog('the domain returned ADDRESSABILITY_NO')",
+        rule_rejection_kind_usage,
+    ),
+    ".value compared with AUTHORIZATION_MISSING": (
+        "baec_app.application.account_state",
+        "ok = k.value == 'AUTHORIZATION_MISSING'",
+        rule_rejection_kind_usage,
+    ),
+    ".value compared with an unrelated string": ("baec_app.application.account_state", "ok = origin.value == 'HUMAN_DRAFT'", rule_rejection_kind_usage),
+    "rejection string compared without .value": ("baec_app.application.account_state", "ok = name == 'SAME_STATE'", rule_rejection_kind_usage),
+    "logging a rejection name": (
+        "baec_app.application.account_state",
+        "logger.info('preview returned %s', 'ADDRESSABILITY_NO')",
+        rule_rejection_kind_usage,
+    ),
+    "getattr by string on an unrelated object": (
+        "baec_app.application.account_state",
+        "x = getattr(result, 'SAME_STATE', None)",
+        rule_rejection_kind_usage,
+    ),
+    "domain may use every rejection member": (
+        "baec_app.domain.state_machine",
+        "from .enums import TransitionRejectionKind as _K\nx = _K.SAME_STATE",
+        rule_rejection_kind_usage,
+    ),
     "a docstring mentioning the gate key": (
         "baec_app.application.dormancy",
         '"""The _GATE_KEY stays private to approval.py."""',
