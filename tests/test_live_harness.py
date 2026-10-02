@@ -6,8 +6,10 @@ No test here contacts Anthropic. The live comparison run itself
 
 import ast
 import copy
+import dataclasses
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -28,6 +30,7 @@ from tests.live.harness import (
     COMPARISON_MODELS,
     CORPUS_PATH,
     CORPUS_VERSION,
+    CaseAudit,
     CaseOutcome,
     CheckResult,
     CorpusError,
@@ -442,7 +445,7 @@ def test_output_contains_only_identifiers_statuses_counts_and_timings(monkeypatc
     raw = _bad("C03", lambda v: v.update(uncertainties=[marker]))
     report, lines = run(overrides={"C03": raw})
     printed = "\n".join(lines)
-    assert len(lines) == 15 and lines[-1].startswith("SUMMARY ")
+    assert len(lines) == 14 + 14 + 2 and lines[-1].startswith("SUMMARY ")  # cases, case audits, audit summary, summary
     for forbidden in (FAKE_KEY, marker, SYSTEM_PROMPT_V1[:40], "Buyer:", "Seller:", "thinking", "Traceback",
                       "ANTHROPIC_API_KEY", "BAEC_LIVE"):
         assert forbidden not in printed
@@ -473,7 +476,20 @@ def _report(model, hard_failed=0, artifacts=14, critical=(), tokens=1000, second
     outcomes = [CaseOutcome("C01", "r", statuses.get("C01", "success"), artifacts > 0, tuple(checks), seconds, tokens, tokens)]
     outcomes += [CaseOutcome(f"C{n:02d}", "r", statuses.get(f"C{n:02d}", "success"), n <= artifacts, (), seconds, tokens, tokens)
                  for n in range(2, 15)]
-    return EvaluationReport(model, CORPUS_VERSION, tuple(outcomes), authority_unchanged)
+    return EvaluationReport(model, CORPUS_VERSION, tuple(outcomes), authority_unchanged,
+                            _audit_for(model, outcomes, authority_unchanged))
+
+
+def _audit_for(model, outcomes, authority_unchanged=True, **changes):
+    """A persisted-audit summary that agrees with the given outcomes."""
+    cases = tuple(
+        CaseAudit(o.case_id, o.ai_run_id, True, o.status not in ("incomplete", "not_started"), model, model, o.status,
+                  "response_received", "spec/v1", "prompt/v1", "input/v1", "schema/v1", "canon/v1", True, True, True, True,
+                  True, o.artifact_present, 1 if o.artifact_present else 0, o.provenance_ok)
+        for o in outcomes)
+    audit = harness.summarize_audit(cases, model=model, cases_expected=len(cases), authority_unchanged=authority_unchanged,
+                                    cleaned=True, failure=None)
+    return dataclasses.replace(audit, **changes)
 
 
 def test_a_critical_failure_makes_a_model_ineligible_whatever_its_other_results():
@@ -650,3 +666,340 @@ def test_a_refusal_on_the_injection_case_passes_core_provenance_and_its_prohibit
     assert c10.status == "refusal" and c10.provenance_ok and not c10.artifact_present
     assert [c.check_id for c in c10.hard if not c.passed] == []
     assert report.operationally_valid and report.critical_failures == ()
+
+
+# --- the persistence audit: read back from the stored records before cleanup -------------------------------------
+
+LOCKED_VERSIONS = {
+    "request_spec_version": "baec-ai-request-spec/v1",
+    "prompt_version": "baec-extraction-prompt/v1",
+    "input_version": "baec-extraction-input/v1",
+    "output_schema_version": "baec-extraction-output/v1",
+    "canonicalization_version": "baec-canonical-json/v1",
+}
+ALL_DIGESTS = ("request_digest_present", "prompt_digest_present", "input_digest_present", "output_schema_digest_present")
+TEST_MODEL = "claude-test-model-5"
+
+
+def _audit(world, ai_run_id, case_id="C01"):
+    (case,) = harness.audit_persisted_cases(world.store, world.connection, [_outcome(case_id, ai_run_id)])
+    return case
+
+
+def _outcome(case_id, ai_run_id, status="success", artifact=True):
+    """An in-memory execution outcome; the audit may use only its case and run identifiers."""
+    return CaseOutcome(case_id, ai_run_id or "-", status, artifact, (), 0.0, 1, 1)
+
+
+def _refusal():
+    return response("I can't help with that.", stop_reason="refusal", model=TEST_MODEL)
+
+
+def test_a_clean_run_audits_every_case_from_the_stored_records_before_deleting_them(monkeypatch):
+    seen = {}
+    real = harness.audit_persisted_cases
+
+    def spy(store, connection, outcomes):
+        path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+        seen.update(path=path, existed=path.exists(), store=store)
+        return real(store, connection, outcomes)
+
+    monkeypatch.setattr(harness, "audit_persisted_cases", spy)
+    report, lines = run()
+    audit = report.audit
+    assert seen["existed"] and not seen["path"].exists() and not seen["path"].parent.exists()
+    assert (audit.cases_expected, audit.cases_attempted, audit.runs_present, audit.terminal_results_present,
+            audit.requested_model_matches, audit.provenance_verified_cases) == (14, 14, 14, 14, 14, 14)
+    assert audit.returned_model_ids_seen == (SONNET,) and audit.failure is None
+    assert audit.authoritative_tables_unchanged and audit.temporary_database_cleaned and report.operationally_valid
+    assert [c.case_id for c in audit.cases] == [o.case_id for o in report.outcomes]
+    assert [c.ai_run_id for c in audit.cases] == [o.ai_run_id for o in report.outcomes]
+    for case in audit.cases:
+        assert {k: getattr(case, k) for k in LOCKED_VERSIONS} == LOCKED_VERSIONS
+        assert all(getattr(case, k) for k in ALL_DIGESTS) and case.provenance_verified
+        assert (case.requested_model, case.returned_model, case.terminal_status, case.remote_outcome) == (
+            SONNET, SONNET, "success", "response_received")
+    assert lines[-2].startswith("AUDIT-SUMMARY cases_expected=14 cases_attempted=14 runs_present=14 ")
+    assert "temporary_database_cleaned=True audit_failure=-" in lines[-2]
+
+
+def test_the_audit_reads_persisted_records_not_execution_results(world):
+    ai_run_id = _store_run(world, _refusal())
+    tamper(world.connection, "UPDATE ai_runs SET prompt_version = 'baec-extraction-prompt/v0-stored'")
+    claimed = _outcome("C01", ai_run_id, status="success", artifact=True)  # what an execution result might claim
+    (case,) = harness.audit_persisted_cases(world.store, world.connection, [claimed])
+    assert (case.terminal_status, case.artifact_present, case.output_present) == ("refusal", False, True)
+    assert case.prompt_version == "baec-extraction-prompt/v0-stored"
+    assert case.requested_model == TEST_MODEL and case.returned_model == TEST_MODEL
+
+
+def test_a_success_reports_its_output_artifact_and_excerpts(world):
+    ai_run_id = _store_run(world, response(_text_output(), model=TEST_MODEL))
+    case = _audit(world, ai_run_id)
+    artifact = world.store.get_artifact_for_run(ai_run_id)
+    assert (case.run_present, case.terminal_result_present, case.output_present, case.artifact_present) == (True,) * 4
+    assert case.excerpt_count == len(world.store.list_artifact_excerpts(artifact.artifact_id)) > 0
+    assert case.terminal_status == "success" and case.provenance_verified
+    assert {k: getattr(case, k) for k in LOCKED_VERSIONS} == LOCKED_VERSIONS
+
+
+@pytest.mark.parametrize(
+    "reply,status,output,remote",
+    [
+        (_refusal, "refusal", True, "response_received"),
+        (lambda: ProviderApiError("overloaded", "req"), "api_error", False, "response_received"),
+        (lambda: ProviderTransportError("timeout_or_disconnect", "unknown"), "transport_failure", False, "unknown"),
+    ],
+    ids=["refusal-with-text", "api-error", "transport-failure"],
+)
+def test_non_success_outcomes_report_their_status_specific_shape(world, reply, status, output, remote):
+    case = _audit(world, _store_run(world, reply()))
+    assert (case.run_present, case.terminal_result_present, case.terminal_status) == (True, True, status)
+    assert (case.output_present, case.artifact_present, case.excerpt_count) == (output, False, 0)
+    assert case.remote_outcome == remote and case.provenance_verified
+    assert all(getattr(case, k) for k in ALL_DIGESTS)
+
+
+def test_the_requested_model_comes_from_the_persisted_run_and_must_match_the_run_model(monkeypatch):
+    other = "claude-other-model-5"
+    real = harness.open_extraction_runtime
+
+    class Redirected:  # a runtime that persists a different model than the harness asked for
+        def __init__(self, runtime):
+            self._runtime, self.service = runtime, self
+
+        def extract_interaction(self, **kwargs):
+            return self._runtime.service.extract_interaction(**dict(kwargs, model=other))
+
+        def close(self):
+            self._runtime.close()
+
+    monkeypatch.setattr(harness, "open_extraction_runtime", lambda path, **kw: Redirected(real(path, **kw)))
+    report = run_evaluation(load_corpus(), model=SONNET, provider=scripted(other), emit=lambda line: None)
+    assert {c.requested_model for c in report.audit.cases} == {other}
+    assert report.audit.requested_model_matches == 0
+    assert "audit_failure" in report.operational_failures
+    assert compare_models({SONNET: report}).reason == "operationally_inconclusive"
+
+
+def test_the_returned_model_comes_from_the_persisted_result(world):
+    mismatch = _audit(world, _store_run(world, response(_text_output(), model="claude-different-5")))
+    assert (mismatch.terminal_status, mismatch.requested_model, mismatch.returned_model) == (
+        "model_mismatch", TEST_MODEL, "claude-different-5")
+    failed = _audit(world, _store_run(world, ProviderApiError("overloaded", "req")))
+    assert failed.returned_model is None
+
+
+def test_a_returned_model_that_is_not_a_plain_model_id_is_never_reported_verbatim(world):
+    ai_run_id = _store_run(world, response(_text_output(), model="RAW RESPONSE TEXT"))
+    assert _audit(world, ai_run_id).returned_model == harness.UNRECOGNIZED_MODEL_ID
+
+
+@pytest.mark.parametrize(
+    "sql,lost",
+    [
+        ("UPDATE ai_runs SET request_digest = 'not-a-digest'", "request_digest_present"),
+        ("UPDATE ai_runs SET prompt_digest = upper(prompt_digest)", "prompt_digest_present"),
+        ("UPDATE ai_runs SET input_digest = substr(input_digest, 2)", "input_digest_present"),
+        ("UPDATE ai_runs SET output_schema_digest = ''", "output_schema_digest_present"),
+    ],
+    ids=["request-malformed", "prompt-uppercase", "input-short", "schema-blank"],
+)
+def test_a_malformed_or_missing_stored_digest_fails_the_audit(world, sql, lost):
+    ai_run_id = _store_run(world, _refusal())
+    tamper(world.connection, sql)
+    case = _audit(world, ai_run_id)
+    assert case.run_present and not getattr(case, lost) and not case.provenance_verified
+    assert case.requested_model is None  # nothing from a record the store refuses is reported as valid
+
+
+@pytest.mark.parametrize("value,ok", [("a" * 64, True), ("A" * 64, False), ("a" * 63, False), (None, False), ("", False),
+                                      ("g" * 64, False)])
+def test_digest_presence_means_a_valid_lowercase_sha256(value, ok):
+    assert harness._digest_present(value) is ok
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["UPDATE ai_run_results SET output_digest = substr(output_digest, 2) || '0'",
+     "UPDATE ai_artifacts SET output_schema_version = 'baec-extraction-output/v0'",
+     "DELETE FROM ai_artifact_excerpts"],
+    ids=["result-output-digest", "artifact-version", "excerpts-removed"],
+)
+def test_a_corrupt_result_or_artifact_is_never_reported_as_verified(world, sql):
+    ai_run_id = _store_run(world, response(_text_output(), model=TEST_MODEL))
+    tamper(world.connection, sql)
+    case = _audit(world, ai_run_id)
+    assert case.run_present and case.terminal_result_present and not case.provenance_verified
+
+
+EXCERPT_CORRUPTIONS = {
+    # (sql, whether Phase 6B itself still accepts the stored rows)
+    "expected-row-deleted": ("DELETE FROM ai_artifact_excerpts WHERE excerpt_id = 'e2'", True),
+    "all-rows-deleted": ("DELETE FROM ai_artifact_excerpts", True),
+    "extra-row": ("INSERT INTO ai_artifact_excerpts (artifact_id, excerpt_id, interaction_id, text, attributed_speaker) "
+                  "SELECT artifact_id, 'e9', interaction_id, 'we would reopen the evaluation.', 'buyer' "
+                  "FROM ai_artifact_excerpts WHERE excerpt_id = 'e1'", True),
+    "speaker-changed": ("UPDATE ai_artifact_excerpts SET attributed_speaker = 'seller' WHERE excerpt_id = 'e2'", True),
+    "text-changed": ("UPDATE ai_artifact_excerpts SET text = 'We would not switch' WHERE excerpt_id = 'e2'", True),
+    "id-changed": ("UPDATE ai_artifact_excerpts SET excerpt_id = 'e7' WHERE excerpt_id = 'e2'", True),
+    "interaction-changed": ("UPDATE ai_artifact_excerpts SET interaction_id = 'INT-N' WHERE excerpt_id = 'e2'", False),
+}
+
+
+@pytest.mark.parametrize("sql,store_accepts", EXCERPT_CORRUPTIONS.values(), ids=EXCERPT_CORRUPTIONS.keys())
+def test_core_provenance_fails_when_stored_excerpts_no_longer_match_the_artifact(world, sql, store_accepts):
+    ai_run_id = _store_run(world, response(_text_output(), model=TEST_MODEL))
+    assert harness.verify_provenance(world.store, ai_run_id)[0] is True
+    tamper(world.connection, sql)
+    artifact_id = world.store.get_artifact_for_run(ai_run_id).artifact_id if store_accepts else None
+    if store_accepts:  # 6B record integrity still holds: only the harness's v1 contract check can catch this
+        world.store.list_artifact_excerpts(artifact_id)
+    ok, _, output = harness.verify_provenance(world.store, ai_run_id)
+    assert ok is False and output is None
+    case = _audit(world, ai_run_id)
+    assert case.provenance_verified is False  # the audit and CORE-PROVENANCE agree
+
+
+def test_the_excerpt_comparison_uses_identity_not_order_and_reports_no_text(world):
+    from baec_app.data.ai_provenance import AiArtifactExcerptRecord, AiAttributedSpeaker
+
+    parsed = BaecExtractionOutput.model_validate_json(_text_output())
+    rows = [AiArtifactExcerptRecord("ART-1", e.excerpt_id, e.source_interaction_id, e.text,
+                                    AiAttributedSpeaker(e.attributed_speaker)) for e in parsed.source_excerpts]
+    assert harness.excerpt_rows_match_artifact(parsed, tuple(reversed(rows))) is True
+    assert harness.excerpt_rows_match_artifact(parsed, tuple(rows + rows[:1])) is False  # a duplicated row
+    duplicated_id = parsed.model_copy(update={"source_excerpts": [parsed.source_excerpts[0]] * 2})
+    assert harness.excerpt_rows_match_artifact(duplicated_id, tuple(rows[:1] * 2)) is False
+    assert harness.excerpt_rows_match_artifact(parsed, ()) is False
+
+
+def test_excerpts_corrupted_after_their_case_was_checked_are_caught_by_the_audit_without_printing_text(monkeypatch):
+    captured = {}
+    real = harness.open_extraction_runtime
+    monkeypatch.setattr(harness, "open_extraction_runtime",
+                        lambda path, **kw: captured.setdefault("path", path) and real(path, **kw))
+
+    def corrupt_c01(spec, content):  # runs during C02, after C01 passed CORE-PROVENANCE
+        if content["interaction_id"] == "INT-SYN-C02":
+            writer = connect(str(captured["path"]))
+            try:
+                tamper(writer, "UPDATE ai_artifact_excerpts SET attributed_speaker = 'unclear' "
+                               "WHERE interaction_id = 'INT-SYN-C01'")
+            finally:
+                writer.close()
+
+    report, lines = run(record=corrupt_c01)
+    assert report.outcomes[0].provenance_ok and not report.audit.cases[0].provenance_verified
+    assert "audit_failure" in report.operational_failures
+    assert compare_models({SONNET: report}).reason == "operationally_inconclusive"
+    printed = "\n".join(lines)
+    for case in load_corpus().cases:
+        assert case.interaction_text.splitlines()[-1] not in printed
+
+
+def test_a_run_with_no_terminal_result_and_a_case_with_no_run_are_audited_as_such(world):
+    incomplete = _audit(world, _store_run(world, RuntimeError("provider bug")))
+    assert (incomplete.run_present, incomplete.terminal_result_present, incomplete.terminal_status) == (True, False, None)
+    assert incomplete.requested_model == TEST_MODEL and not incomplete.provenance_verified
+    never = _audit(world, None)
+    assert (never.ai_run_id, never.run_present, never.provenance_verified) == (None, False, False)
+
+
+def test_an_audit_that_cannot_be_built_makes_the_run_inconclusive_and_cleanup_still_happens(monkeypatch):
+    paths = []
+    real = harness.open_extraction_runtime
+    monkeypatch.setattr(harness, "open_extraction_runtime", lambda path, **kw: paths.append(Path(path)) or real(path, **kw))
+
+    def broken(store, connection, outcomes):
+        raise RuntimeError("SECRET-AUDIT-EXCEPTION-TEXT")
+
+    monkeypatch.setattr(harness, "audit_persisted_cases", broken)
+    report, lines = run()
+    assert (report.audit.failure, report.audit.cases, report.audit.cases_attempted) == ("RuntimeError", (), 0)
+    assert "audit_failure" in report.operational_failures and not report.operationally_valid
+    assert compare_models({SONNET: report}).reason == "operationally_inconclusive"
+    assert report.audit.temporary_database_cleaned and not paths[0].parent.exists()
+    printed = "\n".join(lines)
+    assert "audit_failure=RuntimeError" in printed and "SECRET-AUDIT-EXCEPTION-TEXT" not in printed
+
+
+def test_a_report_without_an_audit_fails_closed():
+    clean = _report(SONNET)
+    assert clean.operationally_valid
+    missing = dataclasses.replace(clean, audit=None)
+    assert missing.operational_failures == ("audit_failure",)
+    assert summary_lines_of(missing)[0] == "AUDIT-SUMMARY audit_failure=missing"
+
+
+def summary_lines_of(report):
+    return harness.summary_lines(report)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [dict(runs_present=13), dict(terminal_results_present=13), dict(provenance_verified_cases=13),
+     dict(requested_model_matches=13), dict(cases_attempted=13), dict(authoritative_tables_unchanged=False)],
+    ids=["runs", "results", "provenance", "requested-model", "attempted", "authority"],
+)
+def test_an_audit_that_disagrees_with_the_run_is_an_operational_failure(change):
+    report = _report(SONNET)
+    disagreeing = dataclasses.replace(report, audit=dataclasses.replace(report.audit, **change))
+    assert "audit_failure" in disagreeing.operational_failures
+    assert compare_models({SONNET: disagreeing, OPUS: _report(OPUS)}).reason == "operationally_inconclusive"
+
+
+def test_an_authority_mutation_is_reflected_in_the_audit(monkeypatch):
+    captured = {}
+    real = harness.open_extraction_runtime
+    monkeypatch.setattr(harness, "open_extraction_runtime",
+                        lambda path, **kw: captured.setdefault("path", path) and real(path, **kw))
+
+    def breach(spec, content):
+        if content["interaction_id"] == "INT-SYN-C09":
+            writer = connect(str(captured["path"]))
+            try:
+                writer.execute("UPDATE accounts SET name = 'changed' WHERE account_id = 'ACC-SYN-C09'")
+            finally:
+                writer.close()
+
+    report, lines = run(record=breach)
+    assert report.audit.authoritative_tables_unchanged is False and report.authority_unchanged is False
+    assert report.operational_failures == ("authority_mutation",)  # consistent: no separate audit failure
+    assert "authoritative_tables_unchanged=False" in lines[-2]
+
+
+def test_a_cleanup_failure_is_reported_and_makes_the_run_inconclusive(monkeypatch):
+    created = []
+    real_mkdtemp, real_rmtree = harness.tempfile.mkdtemp, harness.shutil.rmtree
+    monkeypatch.setattr(harness.tempfile, "mkdtemp", lambda **kw: created.append(real_mkdtemp(**kw)) or created[-1])
+    monkeypatch.setattr(harness.shutil, "rmtree", lambda path, ignore_errors=False: None)  # deletion silently fails
+    try:
+        report, lines = run()
+    finally:
+        monkeypatch.undo()
+        for directory in created:  # never leave the deliberately undeleted directory behind, whatever happened
+            real_rmtree(directory, ignore_errors=True)
+    (leftover,) = created
+    assert report.audit.temporary_database_cleaned is False and report.audit.failure is None
+    assert report.operational_failures == ("cleanup_failure",)
+    assert compare_models({SONNET: report}).reason == "operationally_inconclusive"
+    assert "temporary_database_cleaned=False" in lines[-2] and leftover not in "\n".join(lines)
+
+
+def test_no_text_prompt_response_or_secret_reaches_the_audit_or_the_console(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
+    marker = "RAW-RESPONSE-MARKER"
+    report, lines = run(overrides={"C03": _bad("C03", lambda v: v.update(uncertainties=[marker])),
+                                   "C06": response(f"{marker} refusal text", stop_reason="refusal", model=SONNET)})
+    audit_text = repr(dataclasses.asdict(report.audit))
+    printed = "\n".join(lines)
+    corpus = load_corpus()
+    for text in (audit_text, printed):
+        for forbidden in (FAKE_KEY, marker, SYSTEM_PROMPT_V1[:40], "Buyer:", "Seller:", "canonical_result", "Traceback",
+                          "evaluation.sqlite3", "baec-live-eval-", "ANTHROPIC_API_KEY"):
+            assert forbidden not in text
+        for case in corpus.cases:
+            assert case.interaction_text.splitlines()[-1] not in text
+        assert not re.search(r"[0-9a-f]{64}", text)  # no digest values, only presence booleans
+    assert report.audit.cases[5].terminal_status == "refusal" and report.audit.cases[5].output_present

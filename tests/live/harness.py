@@ -12,9 +12,12 @@ Order of work, each step before the next:
 2. load_corpus: the corpus is validated before any database or provider exists.
 3. A fresh temporary schema-v5 database holding only the corpus fixtures.
 4. A snapshot of every authoritative (non-AI) table.
-5. One case at a time, serially, each terminal outcome persisted before the next.
+5. One case at a time, serially, each terminal outcome persisted before the next,
+   then checked by the status-aware CORE-PROVENANCE check.
 6. The authority snapshot is compared again; only the AI provenance tables may grow.
-7. The temporary database is deleted.
+7. A sanitized persistence audit is read back from the stored records.
+8. The runtime and connections are closed and the temporary database is deleted;
+   only the sanitized audit summary survives, with cleanup confirmed on disk.
 
 Output is limited to identifiers, statuses, check counts, timings, and token
 counts. Nothing prints the API key, the environment, the prompt, a provider
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
@@ -37,7 +41,14 @@ from baec_app.ai.composition import open_extraction_runtime
 from baec_app.ai.contracts import CRITERIA, BaecExtractionOutput
 from baec_app.application import open_read_connection
 from baec_app.data.ai_provenance import AiProvenanceStore, AiRunStatus
-from baec_app.data.database import AI_PROVENANCE_TABLES, DATA_TABLES, RepositoryNotFoundError, connect, open_database
+from baec_app.data.database import (
+    AI_PROVENANCE_TABLES,
+    DATA_TABLES,
+    PersistenceError,
+    RepositoryNotFoundError,
+    connect,
+    open_database,
+)
 from baec_app.data.records import SourceInteraction
 from baec_app.data.repository import Repository
 from baec_app.domain.models import Account
@@ -95,6 +106,9 @@ _FORBIDDEN_TEXT = re.compile(
     re.IGNORECASE,
 )
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
+UNRECOGNIZED_MODEL_ID = "unrecognized_model_id"  # stands in for a returned model value that is not a plain model ID
 
 
 class LiveGateClosed(Exception):
@@ -349,6 +363,7 @@ class EvaluationReport:
     corpus_version: str
     outcomes: tuple[CaseOutcome, ...]
     authority_unchanged: bool
+    audit: RunAudit | None = None  # required for a valid run: a missing audit fails closed
 
     @property
     def calls_attempted(self) -> int:
@@ -381,7 +396,25 @@ class EvaluationReport:
             found.add("provenance_failure")
         if not self.authority_unchanged:
             found.add("authority_mutation")
+        if not self._audit_consistent():
+            found.add("audit_failure")
+        if self.audit is not None and not self.audit.temporary_database_cleaned:
+            found.add("cleanup_failure")
         return tuple(sorted(found))
+
+    def _audit_consistent(self) -> bool:
+        """The persisted audit exists, was built, and agrees with what the run observed."""
+        audit = self.audit
+        if audit is None or audit.failure is not None:
+            return False
+        recorded = [o for o in self.outcomes if o.ai_run_id != "-"]
+        terminal = [o for o in recorded if o.status not in ("incomplete", "not_started")]
+        return (audit.cases_attempted == len(self.outcomes) == audit.cases_expected
+                and audit.runs_present == len(recorded)
+                and audit.terminal_results_present == len(terminal)
+                and audit.requested_model_matches == audit.runs_present
+                and audit.provenance_verified_cases == sum(o.provenance_ok for o in self.outcomes)
+                and audit.authoritative_tables_unchanged == self.authority_unchanged)
 
     @property
     def operationally_valid(self) -> bool:
@@ -400,13 +433,27 @@ class EvaluationReport:
         return sum(o.elapsed_seconds for o in self.outcomes)
 
 
+def excerpt_rows_match_artifact(output: BaecExtractionOutput, stored) -> bool:
+    """The persisted excerpt rows are exactly the artifact's v1 source_excerpts, matched by excerpt ID.
+
+    Same count, same IDs (no duplicates on either side), and for each ID the same source interaction,
+    exact text, and attributed speaker. Order is not relied on. This belongs to the harness, which
+    knows the v1 contract; Phase 6B verifies only generic record integrity. Returns a bare boolean:
+    no excerpt text is ever reported.
+    """
+    expected = {e.excerpt_id: (e.source_interaction_id, e.text, e.attributed_speaker) for e in output.source_excerpts}
+    persisted = {e.excerpt_id: (e.interaction_id, e.text, e.attributed_speaker.value) for e in stored}
+    return len(expected) == len(output.source_excerpts) and len(persisted) == len(stored) and expected == persisted
+
+
 def verify_provenance(store: AiProvenanceStore, ai_run_id: str | None):
     """CORE-PROVENANCE: persisted provenance is complete and coherent for the terminal status observed.
 
     Returns (ok, result, output). Always required: the run, and its terminal result, both loading
     with their 6B integrity checks. A recorded output digest requires the output, digest-verified.
     success additionally requires the artifact and every excerpt, verified and bound to the run,
-    and an artifact that parses as the v1 contract. Any other terminal status requires no artifact,
+    and an artifact that parses as the v1 contract, whose source_excerpts are exactly the persisted
+    excerpt rows (see excerpt_rows_match_artifact). Any other terminal status requires no artifact,
     and must have none. A legitimate non-success status is never a provenance failure by itself.
     """
     if ai_run_id is None:
@@ -421,8 +468,11 @@ def verify_provenance(store: AiProvenanceStore, ai_run_id: str | None):
             store.get_output(ai_run_id)
         if result.status is AiRunStatus.SUCCESS:
             artifact = store.get_artifact_for_run(ai_run_id)
-            store.list_artifact_excerpts(artifact.artifact_id)
-            return True, result, BaecExtractionOutput.model_validate_json(artifact.canonical_result)
+            stored = store.list_artifact_excerpts(artifact.artifact_id)
+            output = BaecExtractionOutput.model_validate_json(artifact.canonical_result)
+            if not excerpt_rows_match_artifact(output, stored):
+                return False, result, None  # the persisted excerpt projection no longer matches the artifact
+            return True, result, output
         try:
             store.get_artifact_for_run(ai_run_id)
         except RepositoryNotFoundError:
@@ -430,6 +480,165 @@ def verify_provenance(store: AiProvenanceStore, ai_run_id: str | None):
         return False, result, None
     except Exception:  # noqa: BLE001
         return False, result, None
+
+
+# --- 6. the persistence audit ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CaseAudit:
+    """One attempted case, read back from the persisted schema-v5 records before cleanup.
+
+    Identifiers, version labels, statuses, model IDs, booleans, and a count only: never stored
+    text, canonical results, excerpts, prompts, or digest values.
+    """
+
+    case_id: str
+    ai_run_id: str | None
+    run_present: bool
+    terminal_result_present: bool
+    requested_model: str | None
+    returned_model: str | None
+    terminal_status: str | None
+    remote_outcome: str | None
+    request_spec_version: str | None
+    prompt_version: str | None
+    input_version: str | None
+    output_schema_version: str | None
+    canonicalization_version: str | None
+    request_digest_present: bool
+    prompt_digest_present: bool
+    input_digest_present: bool
+    output_schema_digest_present: bool
+    output_present: bool
+    artifact_present: bool
+    excerpt_count: int
+    provenance_verified: bool
+
+
+@dataclass(frozen=True)
+class RunAudit:
+    """The whole-run audit. It is all that survives the temporary database."""
+
+    cases_expected: int
+    cases_attempted: int
+    runs_present: int
+    terminal_results_present: int
+    requested_model_matches: int
+    returned_model_ids_seen: tuple[str, ...]
+    provenance_verified_cases: int
+    authoritative_tables_unchanged: bool
+    temporary_database_cleaned: bool
+    cases: tuple[CaseAudit, ...]
+    failure: str | None = None  # the class name if the audit could not be built; never a message
+
+
+def _digest_present(value: object) -> bool:
+    return isinstance(value, str) and _SHA256_HEX.fullmatch(value) is not None
+
+
+def _model_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value if _MODEL_ID.fullmatch(value) else UNRECOGNIZED_MODEL_ID
+
+
+def _row_present(connection, table: str, ai_run_id: str) -> bool:
+    return connection.execute(f"SELECT COUNT(*) FROM {table} WHERE ai_run_id = ?", (ai_run_id,)).fetchone()[0] == 1
+
+
+def _audit_case(store: AiProvenanceStore, connection, case_id: str, ai_run_id: str | None) -> CaseAudit:
+    """Read one case back through the store. Unreadable or corrupt records are reported, never assumed.
+
+    A stored record the store refuses (PersistenceError) yields False/None for what it would have
+    supplied. Any other failure (a closed or missing database) propagates: the audit itself failed.
+    """
+    fields = dict(case_id=case_id, ai_run_id=ai_run_id, run_present=False, terminal_result_present=False,
+                  requested_model=None, returned_model=None, terminal_status=None, remote_outcome=None,
+                  request_spec_version=None, prompt_version=None, input_version=None, output_schema_version=None,
+                  canonicalization_version=None, request_digest_present=False, prompt_digest_present=False,
+                  input_digest_present=False, output_schema_digest_present=False, output_present=False,
+                  artifact_present=False, excerpt_count=0, provenance_verified=False)
+    if ai_run_id is None:
+        return CaseAudit(**fields)  # no run was ever recorded for this case
+    fields.update(run_present=_row_present(connection, "ai_runs", ai_run_id),
+                  terminal_result_present=_row_present(connection, "ai_run_results", ai_run_id))
+    try:
+        run = store.get_run(ai_run_id)
+    except PersistenceError:
+        return CaseAudit(**fields)
+    fields.update(requested_model=run.requested_model, request_spec_version=run.request_spec_version,
+                  prompt_version=run.prompt_version, input_version=run.input_version,
+                  output_schema_version=run.output_schema_version,
+                  canonicalization_version=run.canonicalization_version,
+                  request_digest_present=_digest_present(run.request_digest),
+                  prompt_digest_present=_digest_present(run.prompt_digest),
+                  input_digest_present=_digest_present(run.input_digest),
+                  output_schema_digest_present=_digest_present(run.output_schema_digest))
+    try:
+        result = store.get_result(ai_run_id)
+    except PersistenceError:
+        return CaseAudit(**fields)
+    fields.update(returned_model=_model_id(result.response_model), terminal_status=result.status.value,
+                  remote_outcome=result.remote_outcome.value)
+    artifact, excerpts_match = None, True
+    try:
+        if result.output_digest is not None:
+            fields["output_present"] = _digest_present(store.get_output(ai_run_id).output_digest)
+        try:
+            artifact = store.get_artifact_for_run(ai_run_id)
+        except RepositoryNotFoundError:
+            pass
+        if artifact is not None:
+            stored = store.list_artifact_excerpts(artifact.artifact_id)
+            fields.update(artifact_present=True, excerpt_count=len(stored))
+            cited = BaecExtractionOutput.model_validate_json(artifact.canonical_result).source_excerpts
+            # independently of CORE-PROVENANCE: every excerpt the artifact cites is stored, and nothing else is
+            keys = [(e.excerpt_id, e.source_interaction_id, e.text, e.attributed_speaker) for e in cited]
+            rows = [(e.excerpt_id, e.interaction_id, e.text, e.attributed_speaker.value) for e in stored]
+            excerpts_match = sorted(keys) == sorted(rows) and len({k[0] for k in keys}) == len(keys)
+    except (PersistenceError, ValueError):  # ValueError: a stored canonical result that no longer parses
+        return CaseAudit(**fields)
+    success = result.status is AiRunStatus.SUCCESS
+    fields["provenance_verified"] = (
+        verify_provenance(store, ai_run_id)[0]
+        and all(fields[f"{name}_digest_present"] for name in ("request", "prompt", "input", "output_schema"))
+        and fields["output_present"] == (result.output_digest is not None)
+        and fields["artifact_present"] == success
+        and excerpts_match
+        and (artifact is None or (artifact.output_schema_version == run.output_schema_version
+                                  and artifact.task_version == run.task_version))
+    )
+    return CaseAudit(**fields)
+
+
+def audit_persisted_cases(store: AiProvenanceStore, connection, outcomes) -> tuple[CaseAudit, ...]:
+    """Audit every attempted case from the stored records. Only case and run identifiers come from the run."""
+    return tuple(_audit_case(store, connection, o.case_id, None if o.ai_run_id == "-" else o.ai_run_id)
+                 for o in outcomes)
+
+
+def summarize_audit(cases: tuple[CaseAudit, ...], *, model: str, cases_expected: int, authority_unchanged: bool,
+                    cleaned: bool, failure: str | None) -> RunAudit:
+    return RunAudit(
+        cases_expected=cases_expected,
+        cases_attempted=len(cases) if failure is None else 0,
+        runs_present=sum(c.run_present for c in cases),
+        terminal_results_present=sum(c.terminal_result_present for c in cases),
+        requested_model_matches=sum(c.requested_model == model for c in cases),
+        returned_model_ids_seen=tuple(sorted({c.returned_model for c in cases if c.returned_model is not None})),
+        provenance_verified_cases=sum(c.provenance_verified for c in cases),
+        authoritative_tables_unchanged=authority_unchanged,
+        temporary_database_cleaned=cleaned,
+        cases=cases,
+        failure=failure,
+    )
+
+
+def _delete_directory(directory: Path) -> bool:
+    """Delete the temporary evaluation directory. True only once it is confirmed gone from disk."""
+    shutil.rmtree(directory, ignore_errors=True)
+    return not directory.exists()
 
 
 def _evaluate_case(case: LiveCase, ai_run_id: str | None, store: AiProvenanceStore, elapsed: float,
@@ -458,8 +667,39 @@ def case_line(model: str, corpus_version: str, outcome: CaseOutcome) -> str:
             + (f" error={outcome.error}" if outcome.error else ""))
 
 
+def _yes(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def audit_lines(audit: RunAudit | None) -> list[str]:
+    if audit is None:
+        return ["AUDIT-SUMMARY audit_failure=missing"]
+    lines = [
+        f"AUDIT {c.case_id} {c.ai_run_id or '-'} run={_yes(c.run_present)} result={_yes(c.terminal_result_present)} "
+        f"requested={c.requested_model or '-'} returned={c.returned_model or '-'} status={c.terminal_status or '-'} "
+        f"remote={c.remote_outcome or '-'} spec={c.request_spec_version or '-'} prompt={c.prompt_version or '-'} "
+        f"input={c.input_version or '-'} schema={c.output_schema_version or '-'} "
+        f"canonicalization={c.canonicalization_version or '-'} "
+        f"digests=request:{_yes(c.request_digest_present)},prompt:{_yes(c.prompt_digest_present)},"
+        f"input:{_yes(c.input_digest_present)},schema:{_yes(c.output_schema_digest_present)} "
+        f"output={_yes(c.output_present)} artifact={_yes(c.artifact_present)} excerpts={c.excerpt_count} "
+        f"verified={_yes(c.provenance_verified)}"
+        for c in audit.cases
+    ]
+    lines.append(
+        f"AUDIT-SUMMARY cases_expected={audit.cases_expected} cases_attempted={audit.cases_attempted} "
+        f"runs_present={audit.runs_present} terminal_results_present={audit.terminal_results_present} "
+        f"requested_model_matches={audit.requested_model_matches} "
+        f"returned_model_ids_seen={','.join(audit.returned_model_ids_seen) or '-'} "
+        f"provenance_verified_cases={audit.provenance_verified_cases} "
+        f"authoritative_tables_unchanged={audit.authoritative_tables_unchanged} "
+        f"temporary_database_cleaned={audit.temporary_database_cleaned} audit_failure={audit.failure or '-'}"
+    )
+    return lines
+
+
 def summary_lines(report: EvaluationReport) -> list[str]:
-    return [
+    return audit_lines(report.audit) + [
         f"SUMMARY model={report.model} corpus={report.corpus_version} calls={report.calls_attempted} "
         f"artifacts={report.successful_artifacts} hard_passed={report.hard_passed} hard_failed={report.hard_failed} "
         f"critical={','.join(report.critical_failures) or '-'} authority_unchanged={report.authority_unchanged} "
@@ -478,8 +718,9 @@ def run_evaluation(corpus: Corpus, *, model: str, provider=None, emit: Callable[
     """
     if type(corpus) is not Corpus:
         raise CorpusError("run_evaluation requires a validated Corpus")
-    with tempfile.TemporaryDirectory(prefix="baec-live-eval-") as directory:
-        path = Path(directory) / "evaluation.sqlite3"
+    directory = Path(tempfile.mkdtemp(prefix="baec-live-eval-"))
+    try:
+        path = directory / "evaluation.sqlite3"
         build_evaluation_database(path, corpus)
         before = authority_snapshot(path)
         outcomes = []
@@ -501,13 +742,22 @@ def run_evaluation(corpus: Corpus, *, model: str, provider=None, emit: Callable[
                     outcome = _evaluate_case(case, result.ai_run_id, store, time.monotonic() - started)
                 outcomes.append(outcome)
                 emit(case_line(model, corpus.corpus_version, outcome))
+            authority_unchanged = authority_snapshot(path) == before
+            try:  # read back from the stored records while the temporary database still exists
+                audited, audit_failure = audit_persisted_cases(store, inspection, outcomes), None
+            except Exception as error:  # noqa: BLE001 - an infrastructure failure: recorded by class name only
+                audited, audit_failure = (), type(error).__name__
         finally:
             inspection.close()
             runtime.close()
-        report = EvaluationReport(model, corpus.corpus_version, tuple(outcomes), authority_snapshot(path) == before)
-        for line in summary_lines(report):
-            emit(line)
-        return report
+    finally:
+        cleaned = _delete_directory(directory)
+    audit = summarize_audit(audited, model=model, cases_expected=len(corpus.cases),
+                            authority_unchanged=authority_unchanged, cleaned=cleaned, failure=audit_failure)
+    report = EvaluationReport(model, corpus.corpus_version, tuple(outcomes), authority_unchanged, audit)
+    for line in summary_lines(report):
+        emit(line)
+    return report
 
 
 # --- comparison --------------------------------------------------------------------------------------
