@@ -19,18 +19,24 @@ Rules this module follows:
 * Every load re-verifies digests, bindings, and excerpt fidelity, and raises
   PersistenceIntegrityError rather than returning anything corrupt.
 * The store never reads the clock; timestamps are supplied by callers.
+* open_ai_provenance_store(path) is the only opener: it opens an existing
+  schema-v5 file with foreign keys enforced, never creates one, and returns a
+  store that owns (and closes) its connection. A store built directly from a
+  connection does not own it.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Iterator
 
 from baec_app.data.database import (
@@ -44,6 +50,7 @@ from baec_app.data.database import (
     RepositoryConflictError,
     RepositoryNotFoundError,
     RepositoryVerificationError,
+    check_sqlite_version,
     require_current_schema,
     transaction,
 )
@@ -418,6 +425,43 @@ def _fail_closed(what: str) -> Iterator[None]:
         raise PersistenceIntegrityError(f"stored {what} is corrupt or contradictory: {error}") from error
 
 
+class AiProvenanceStoreUnavailable(PersistenceError):
+    """open_ai_provenance_store could not open an existing database file for AI provenance."""
+
+
+def open_ai_provenance_store(path: str | os.PathLike[str]) -> AiProvenanceStore:
+    """Open an existing schema-v5 database for AI provenance writes, never creating one.
+
+    Accepts a str or an os.PathLike[str]. Refuses blank paths, ":memory:", file: URIs,
+    missing files, directories, and non-databases; DatabaseVersionError propagates for
+    another schema version. The returned store owns its connection; close() closes it.
+    """
+    if isinstance(path, os.PathLike):
+        path = os.fspath(path)
+    if type(path) is not str or not path.strip() or path == ":memory:" or path.strip().lower().startswith("file:"):
+        raise AiProvenanceStoreUnavailable("a path to an existing database file is required")
+    file = Path(path)
+    if not file.is_file():
+        raise AiProvenanceStoreUnavailable(f"{path!r} is not an existing database file")
+    check_sqlite_version()
+    try:
+        # mode=rw opens an existing file for writing and never creates one.
+        connection = sqlite3.connect(file.resolve().as_uri() + "?mode=rw", uri=True, isolation_level=None)
+    except sqlite3.Error as error:
+        raise AiProvenanceStoreUnavailable(f"{path!r} cannot be opened: {error}") from error
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            store = AiProvenanceStore(connection)  # verifies foreign keys and the schema version
+        except sqlite3.DatabaseError as error:
+            raise AiProvenanceStoreUnavailable(f"{path!r} is not a readable database: {error}") from error
+    except BaseException:
+        connection.close()
+        raise
+    store._owns_connection = True
+    return store
+
+
 class AiProvenanceStore:
     """SQL for the five AI provenance tables, and nothing else: no domain writes."""
 
@@ -428,6 +472,25 @@ class AiProvenanceStore:
             raise PersistenceError("AiProvenanceStore requires foreign key enforcement")
         require_current_schema(connection)
         self._db = connection
+        self._owns_connection = False
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        """Close an owned connection. Idempotent; a store that does not own its connection leaves it open."""
+        if not self._closed:
+            self._closed = True
+            if self._owns_connection:
+                self._db.close()
+
+    def __enter__(self) -> AiProvenanceStore:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
 
     @contextmanager
     def _write(self) -> Iterator[None]:

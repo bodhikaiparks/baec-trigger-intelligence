@@ -381,16 +381,22 @@ def rule_r3_interfaces_do_not_import_data(facts: Facts) -> list[str]:
 MODEL_PACKAGES = ("anthropic", "claude_agent_sdk", "claude_code_sdk", "openai", "litellm", "langchain")
 MCP_PACKAGES = ("mcp", "fastmcp")
 MCP_INTERFACE_PACKAGE = "baec_app.mcp"  # the approved Phase 5 MCP Core package (docs/PHASE5_MCP_CORE_DESIGN.md)
+# The one approved Phase 6 provider adapter (docs/PHASE6C_ANTHROPIC_SDK_CHARACTERIZATION.md §11). Exact module only.
+ANTHROPIC_PROVIDER_MODULE = "baec_app.ai.anthropic_provider"
 
 
 def rule_no_model_or_mcp_integration(facts: Facts) -> list[str]:
     """No production code imports a model SDK, statically or dynamically.
 
-    The MCP SDK may be imported only by the approved Phase 5 MCP interface
-    package (baec_app.mcp); the application, domain, data, and scripts may not.
+    The one exception: the anthropic SDK may be imported by exactly
+    baec_app.ai.anthropic_provider (Phase 6). The MCP SDK may be imported only by
+    the approved Phase 5 MCP interface package (baec_app.mcp); the application,
+    domain, data, and scripts may not.
     """
     found = []
     for package in MODEL_PACKAGES:
+        if package == "anthropic" and facts.module == ANTHROPIC_PROVIDER_MODULE:
+            continue
         found += imports_package(facts, package)
     if not _in_package(facts.module, MCP_INTERFACE_PACKAGE):
         for package in MCP_PACKAGES:
@@ -824,6 +830,20 @@ VIOLATIONS = {
         rule_no_model_or_mcp_integration,
     ),
     "MCP package imports a model SDK": ("baec_app.mcp.server", "import anthropic", rule_no_model_or_mcp_integration),
+    "the AI service imports anthropic": ("baec_app.ai.service", "import anthropic", rule_no_model_or_mcp_integration),
+    "a look-alike provider module imports anthropic": (
+        "baec_app.ai.anthropic_provider_extra", "import anthropic", rule_no_model_or_mcp_integration),
+    "the AI composition imports anthropic": (
+        "baec_app.ai.composition", "from anthropic import Anthropic", rule_no_model_or_mcp_integration),
+    "the application imports anthropic": ("baec_app.application.facades", "import anthropic", rule_no_model_or_mcp_integration),
+    "the data layer imports anthropic": ("baec_app.data.ai_provenance", "import anthropic", rule_no_model_or_mcp_integration),
+    "a script imports anthropic": ("scripts.seed_demo", "import anthropic", rule_no_model_or_mcp_integration),
+    "the AI service imports anthropic dynamically": (
+        "baec_app.ai.service", "import importlib\nimportlib.import_module('anthropic')", rule_no_model_or_mcp_integration),
+    "the provider module imports another model SDK": (
+        "baec_app.ai.anthropic_provider", "import openai", rule_no_model_or_mcp_integration),
+    "the provider module imports the MCP SDK": (
+        "baec_app.ai.anthropic_provider", "from mcp.server import MCPServer", rule_no_model_or_mcp_integration),
     "MCP package imports openai dynamically": (
         "baec_app.mcp.adapters",
         "import importlib\nimportlib.import_module('openai')",
@@ -980,6 +1000,8 @@ ALLOWED = {
         rule_r3_interfaces_do_not_import_data,
     ),
     "the MCP interface package imports the MCP SDK": ("baec_app.mcp.server", "from mcp.server import MCPServer", rule_no_model_or_mcp_integration),
+    "the exact Anthropic provider module imports anthropic": (
+        "baec_app.ai.anthropic_provider", "import anthropic\nfrom anthropic import Anthropic", rule_no_model_or_mcp_integration),
     "a docstring mentioning anthropic and MCP": (
         "baec_app.application.facades",
         '"""Not connected to Claude (anthropic) or MCP in Phase 4."""',

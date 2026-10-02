@@ -498,9 +498,9 @@ def test_the_store_imports_only_the_data_layer_and_the_standard_library():
             imported |= {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module)
-    assert imported == {"__future__", "hashlib", "json", "re", "sqlite3", "contextlib", "dataclasses", "datetime",
-                        "enum", "typing", "baec_app.data.database", "baec_app.data.records",
-                        "baec_app.data.repository"}
+    assert imported == {"__future__", "hashlib", "json", "os", "re", "sqlite3", "contextlib", "dataclasses", "datetime",
+                        "enum", "pathlib", "typing", "baec_app.data.database", "baec_app.data.records",
+                        "baec_app.data.repository"}  # os and pathlib: open_ai_provenance_store (6C-B)
     source = MODULE.read_text(encoding="utf-8")
     for name in ("HumanAuthorization", "HumanApproval", "HumanConfirmationGate", "HumanCommandFacade",
                  "ProposalOrigin", "baec_app.ai", "baec_app.mcp", "anthropic", "baec_app.application"):
