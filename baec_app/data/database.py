@@ -32,8 +32,9 @@ from baec_app.domain.enums import (
 )
 
 # Version 2 added composite keys binding a transition's BAEC to its account
-# and its judgment to that BAEC.
-SCHEMA_VERSION = 2
+# and its judgment to that BAEC. Version 3 added the RC-33 guards: protected
+# baec_records columns, no baec_records deletes, and no replacing stored rows.
+SCHEMA_VERSION = 3
 MINIMUM_SQLITE_VERSION = (3, 37, 0)  # first version with STRICT tables
 
 
@@ -96,6 +97,46 @@ APPEND_ONLY_TABLES = (
     "non_evaluation_evidence",
     "account_state_transitions",
 )
+
+# baec_records is not append-only: staleness_status is a lifecycle field
+# reserved for a later, explicitly designed phase. Every other column holds
+# source evidence, provenance, a classification decision, or AI-derived
+# text, and is immutable once written (RC-33).
+BAEC_RECORD_MUTABLE_COLUMNS = ("staleness_status",)
+BAEC_RECORD_PROTECTED_COLUMNS = (
+    "baec_id",
+    "account_id",
+    "source_interaction_id",
+    "source_excerpt_id",
+    "captured_at",
+    "buyer_role",
+    "buyer_exact_statement",
+    "articulation_origin",
+    "elicitation_mode",
+    "classification",
+    "classification_reason",
+    "confirmation_authorization_id",
+    "normalized_text",
+    "normalized_generated_at",
+    "normalized_model",
+)
+
+# Every UNIQUE key (primary key included) of each table whose stored rows must
+# never be replaced. SQLite runs REPLACE as delete-then-insert without firing
+# DELETE triggers, so each insert that collides on any of these keys is refused.
+REPLACE_GUARDED_KEYS = {
+    "interactions": (("interaction_id",),),
+    "interaction_evidence": (("evidence_id",), ("interaction_id", "provenance", "text")),
+    "human_authorizations": (("authorization_id",),),
+    "baec_records": (("baec_id",), ("confirmation_authorization_id",)),
+    "criterion_assessments": (("baec_id", "criterion"), ("baec_id", "position")),
+    "criterion_evidence": (("baec_id", "criterion", "position"),),
+    "stringency_expressions": (("baec_id",),),
+    "dormancy_judgments": (("judgment_id",), ("authorization_id",)),
+    "evaluation_evidence": (("evaluation_evidence_id",),),
+    "non_evaluation_evidence": (("non_evaluation_evidence_id",),),
+    "account_state_transitions": (("transition_id",), ("authorization_id",)),
+}
 
 
 def _values(members) -> str:
@@ -281,6 +322,38 @@ def _schema_statements() -> list[str]:
         SELECT RAISE(ABORT, '{table} is append-only');
     END"""
             )
+    for table, keys in REPLACE_GUARDED_KEYS.items():
+        collision = " OR ".join(
+            f"EXISTS (SELECT 1 FROM {table} WHERE "
+            + " AND ".join(f"{column} = NEW.{column}" for column in key)
+            + ")"
+            for key in keys
+        )
+        statements.append(
+            f"""
+    CREATE TRIGGER {table}_no_replace
+    BEFORE INSERT ON {table}
+    WHEN {collision}
+    BEGIN
+        SELECT RAISE(ABORT, '{table} rows cannot be replaced');
+    END"""
+        )
+    statements.append(
+        f"""
+    CREATE TRIGGER baec_records_protected_no_update
+    BEFORE UPDATE OF {", ".join(BAEC_RECORD_PROTECTED_COLUMNS)} ON baec_records
+    BEGIN
+        SELECT RAISE(ABORT, 'baec_records source and decision columns are immutable');
+    END"""
+    )
+    statements.append(
+        """
+    CREATE TRIGGER baec_records_no_delete
+    BEFORE DELETE ON baec_records
+    BEGIN
+        SELECT RAISE(ABORT, 'baec_records rows cannot be deleted');
+    END"""
+    )
     return statements
 
 

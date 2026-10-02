@@ -338,6 +338,8 @@ All PROPOSED and untested. The software does not assume any of them is true.
 
 Phase 1 rules, the code that enforces them, and the tests that check them. Paths are relative to the repository root; code is under `baec_app/domain/`. Rules marked "later phases" are not yet enforced in code.
 
+Phase 3 storage-layer enforcement of these rules is traced separately in `docs/PHASE3_PERSISTENCE_TRACEABILITY.md`; that addendum adds no rules.
+
 | Rule | Code | Tests |
 |---|---|---|
 | RC-02 | `models.py` (`CriterionAssessment`, `BaecCandidate`) | `tests/test_models.py::test_rc02_criterion_assessment_rejects`, `::test_rc02_candidate_rejects` |
