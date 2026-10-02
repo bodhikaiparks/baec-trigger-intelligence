@@ -15,8 +15,8 @@ Phase numbers are implementation-planning labels for this software. They are not
 | Phase 2 | — | none | none | Not materialized (see §3) |
 | Phase 3 | Persistence and synthetic data | `phase-3-persistence` | `4063c23` | Complete |
 | Phase 3 hardening | RC-33 schema guards | `phase-3-persistence-hardening` | `3e68030` | Complete |
-| Phase 3 hardening | Evidence fidelity | `phase-3-evidence-fidelity-hardening` | the tagged commit | Complete |
-| Phase 4 | Application & Human Authorization Boundary | none | none | Planned; design not yet approved |
+| Phase 3 hardening | Evidence fidelity | `phase-3-evidence-fidelity-hardening` | `7a01c24` | Complete |
+| Phase 4 | Application & Human Authorization Boundary | `phase-4-application-boundary` | the tagged commit | Complete |
 
 Existing tags and commits are not renamed, renumbered, moved, or rewritten.
 
@@ -74,12 +74,28 @@ Schema version becomes 4. Version 3 databases are refused and must be rebuilt fr
 
 How Phase 3 and its hardening map to the Research Contract is recorded in `docs/PHASE3_PERSISTENCE_TRACEABILITY.md`.
 
-## 5. Future phases
+## 5. Phase 4: Application & Human Authorization Boundary
 
-Phase 4 and any later numbers are planning labels only. A phase is defined by its approved design document, not by its number. A future phase may be renumbered, split, or dropped before it is approved. Nothing is built ahead of the approved phase (`CLAUDE.md`).
+Tag `phase-4-application-boundary`. Design approved in `docs/PHASE4_APPLICATION_BOUNDARY_DESIGN.md` (commit `2c2016d`), then implemented in five reviewed increments:
 
-Phase 4 (Application & Human Authorization Boundary) has a working title only. Its scope will be fixed by a design document that the project owner approves before any implementation begins.
+| Increment | Commit | Contents |
+|---|---|---|
+| 4A | `ac86daa` | Context, errors, proposal origins, canonical request serialization, request types, architecture scanner |
+| 4B | `a5a3be7` | Human confirmation gate: sessions, one approval per request, validate-then-consume redemption |
+| 4C | `427cf05` | `authority.py`, classification and dormancy-judgment services; gate registration tightened to `register(session, request)` |
+| 4D | `12e7ea7` | Account-state service: previews, request coherence, human-authorized transitions |
+| 4E | the tagged commit | Proposal objects, read path, facades, composition, final boundary rules, traceability |
 
-## 6. What a checkpoint does and does not show
+Contents: `baec_app/application/` (no change to the domain, data, schema, or seed data). Tests: 2659 passing, of which 1001 are Phase 4 application tests; the 1658 earlier tests are unchanged.
+
+Phase 4 provides application-level authority separation and accident resistance. It does not authenticate anyone, does not defend against malicious code running inside the trusted process, and does not connect any model or MCP input. How the design maps to code and tests is recorded in `docs/PHASE4_IMPLEMENTATION_TRACEABILITY.md`.
+
+## 6. Future phases
+
+Later phase numbers are planning labels only. A phase is defined by its approved design document, not by its number. A future phase may be renumbered, split, or dropped before it is approved. Nothing is built ahead of the approved phase (`CLAUDE.md`).
+
+Before any model or MCP proposal input is enabled, persistent AI-origin provenance must be designed and implemented (Phase 4 design §18).
+
+## 7. What a checkpoint does and does not show
 
 A checkpoint shows that the software at that commit passed its own tests on synthetic data. It does not show that BAEC or CEE is valid, that BAECs predict evaluation or purchase, that the software improves sales performance, or that the software is secure for production use (Research Contract §13).

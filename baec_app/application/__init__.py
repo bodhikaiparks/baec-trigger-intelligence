@@ -1,6 +1,85 @@
 """Application layer: the human-authorization boundary above the repository.
 
-Phase 4 is being built in reviewed increments (see
-docs/PHASE4_APPLICATION_BOUNDARY_DESIGN.md). Public exports are added when
-the facades exist; until then import from the individual modules.
+Future interface code imports from this package only. The command facade is
+for a trusted human-interaction adapter (the future UI); the proposal facade
+is a deterministic read/preview/propose surface on a query-only connection
+and is not connected to any model or MCP input in Phase 4. See
+docs/PHASE4_APPLICATION_BOUNDARY_DESIGN.md.
 """
+
+from baec_app.application.approval import HumanApproval
+from baec_app.application.composition import build_command_facade, build_proposal_facade, open_read_connection
+from baec_app.application.context import Actor, Clock, IdFactory, InteractionSession, SystemClock, UuidIdFactory
+from baec_app.application.errors import (
+    ApplicationError,
+    ApplicationValidationError,
+    ApprovalAlreadyUsed,
+    ApprovalKindMismatch,
+    ApprovalNotRecognized,
+    CanonicalizationError,
+    DigestMismatch,
+    HumanActionError,
+    NotConfirmable,
+    ProposalNotAuthoritative,
+    ReadDatabaseUnavailable,
+    ReadOnlyConnectionRequired,
+    ReferenceMismatch,
+    RequestAlreadyApproved,
+    RequestAlreadyRegistered,
+    RequestNotCoherent,
+    RequestNotRecognized,
+    SessionNotRecognized,
+)
+from baec_app.application.facades import HumanCommandFacade, ProposalFacade, ReadService
+from baec_app.application.proposals import (
+    ConfirmationProposal,
+    DormancyJudgmentProposal,
+    MoveToActiveProposal,
+    MoveToDormantProposal,
+    MoveToNoPlausiblePathProposal,
+    ProposalOrigin,
+)
+from baec_app.application.requests import ApprovalRequest, ClassificationPreview, RequestKind
+
+__all__ = [
+    "Actor",
+    "ApplicationError",
+    "ApplicationValidationError",
+    "ApprovalAlreadyUsed",
+    "ApprovalKindMismatch",
+    "ApprovalNotRecognized",
+    "ApprovalRequest",
+    "CanonicalizationError",
+    "ClassificationPreview",
+    "Clock",
+    "ConfirmationProposal",
+    "DigestMismatch",
+    "DormancyJudgmentProposal",
+    "HumanActionError",
+    "HumanApproval",
+    "HumanCommandFacade",
+    "IdFactory",
+    "InteractionSession",
+    "MoveToActiveProposal",
+    "MoveToDormantProposal",
+    "MoveToNoPlausiblePathProposal",
+    "NotConfirmable",
+    "ProposalFacade",
+    "ProposalNotAuthoritative",
+    "ProposalOrigin",
+    "ReadDatabaseUnavailable",
+    "ReadOnlyConnectionRequired",
+    "ReadService",
+    "ReferenceMismatch",
+    "RequestAlreadyApproved",
+    "RequestAlreadyRegistered",
+    "RequestKind",
+    "RequestNotCoherent",
+    "RequestNotRecognized",
+    "SessionNotRecognized",
+    "SystemClock",
+    "UuidIdFactory",
+    "build_command_facade",
+    "build_proposal_facade",
+    "open_read_connection",
+]

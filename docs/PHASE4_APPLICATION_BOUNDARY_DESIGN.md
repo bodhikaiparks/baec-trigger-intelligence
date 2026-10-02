@@ -1,7 +1,7 @@
 # Phase 4 Design: Application & Human Authorization Boundary
 
-> **Approved design — not implemented.**
-> This is a design checkpoint only. No Phase 4 code exists. Nothing in this document describes implemented or tested behavior. The Phase 4 implementation tag will be created only after implementation, review, and testing.
+> **Approved design — implementation complete pending final checkpoint; see `docs/PHASE4_IMPLEMENTATION_TRACEABILITY.md`.**
+> This document is the approved design. Where the implementation refines it, the traceability document records the difference.
 
 **Project:** BAEC Trigger Intelligence
 **Baseline:** `phase-3-evidence-fidelity-hardening` (commit `7a01c24`), schema version 4, 1658 tests passing.

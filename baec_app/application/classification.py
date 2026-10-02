@@ -35,6 +35,20 @@ if TYPE_CHECKING:
     from baec_app.data.repository import Repository
 
 
+def preview_classification(candidate: BaecCandidate) -> ClassificationPreview:
+    """The locked classifier's result, for display. Writes nothing; needs no repository or gate.
+
+    The one implementation of the classification preview, used by
+    ClassificationService and by the read-only ProposalFacade.
+    """
+    result = classify_candidate(candidate)
+    return ClassificationPreview(
+        candidate=candidate,
+        result=result,
+        confirmable=result.classification is BaecClassification.CONFIRMED_BAEC,
+    )
+
+
 class ClassificationService:
     def __init__(self, repository: Repository, gate: HumanConfirmationGate, clock: Clock, ids: IdFactory) -> None:
         self._repository = repository
@@ -44,12 +58,7 @@ class ClassificationService:
 
     def preview(self, candidate: BaecCandidate) -> ClassificationPreview:
         """The locked classifier's result, for display. Writes nothing."""
-        result = classify_candidate(candidate)
-        return ClassificationPreview(
-            candidate=candidate,
-            result=result,
-            confirmable=result.classification is BaecClassification.CONFIRMED_BAEC,
-        )
+        return preview_classification(candidate)
 
     def save_nonconfirmed(self, candidate: BaecCandidate, *, captured_at: datetime) -> BaecRecord:
         """Save a NOT_BAEC or INSUFFICIENT_EVIDENCE record. The locked factory refuses a confirmable candidate."""

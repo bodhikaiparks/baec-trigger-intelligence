@@ -9,7 +9,9 @@ serialization purity, and the two Phase 4 proposal origins; 4B adds R4
 4C adds R1, R2, and R5 (HumanAuthorization construction and authority
 imports) and the (self, approval) command signatures; 4D admits
 account_state.py to R5 and limits application use of TransitionRejectionKind
-to AUTHORIZATION_MISSING.
+to AUTHORIZATION_MISSING; 4E adds R3 (future interfaces never import the data
+layer), no model/MCP imports, no parse_proposal, no authority-style
+parameters, and the facade command signatures.
 """
 
 from __future__ import annotations
@@ -21,9 +23,10 @@ from pathlib import Path
 
 import pytest
 
-from baec_app.application.account_state import AccountStateService
+from baec_app.application.account_state import AccountStatePreviewService, AccountStateService
 from baec_app.application.classification import ClassificationService
 from baec_app.application.dormancy import DormancyJudgmentService
+from baec_app.application.facades import HumanCommandFacade, ProposalFacade, ReadService
 from baec_app.application.proposals import ProposalOrigin
 from baec_app.domain.enums import TransitionRejectionKind
 
@@ -46,6 +49,8 @@ class Facts:
     references: list[tuple[str, str | None, int]] = field(default_factory=list)  # (resolved name, member read from it)
     getattr_strings: list[tuple[str, str, int]] = field(default_factory=list)  # getattr(object, "literal")
     value_comparisons: list[tuple[str, int]] = field(default_factory=list)  # literals compared with some `x.value`
+    definitions: list[tuple[str, int]] = field(default_factory=list)  # function and class names defined
+    parameters: list[tuple[str, str, int]] = field(default_factory=list)  # (public function, parameter name)
     dynamic_imports: list[tuple[str, int]] = field(default_factory=list)  # string arguments to import calls
 
 
@@ -120,6 +125,15 @@ def scan(source: str, module: str, is_package: bool = False) -> Facts:
             base = dotted(expr.value)
             return f"{base}.{expr.attr}" if base else None
         return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            facts.definitions.append((node.name, node.lineno))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+            arguments = node.args
+            for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg):
+                if argument is not None:
+                    facts.parameters.append((node.name, argument.arg, node.lineno))
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare):
@@ -357,6 +371,47 @@ def rule_rejection_kind_usage(facts: Facts) -> list[str]:
     return found
 
 
+def rule_r3_interfaces_do_not_import_data(facts: Facts) -> list[str]:
+    """Future interface code (baec_app/interfaces/**) imports application and domain, never the data layer."""
+    if not _in_package(facts.module, "baec_app.interfaces"):
+        return []
+    return imports_package(facts, "baec_app.data")
+
+
+MODEL_PACKAGES = ("anthropic", "mcp", "fastmcp", "claude_agent_sdk", "claude_code_sdk", "openai", "litellm", "langchain")
+
+
+def rule_no_model_or_mcp_integration(facts: Facts) -> list[str]:
+    """Phase 4 production code imports no model or MCP client, statically or dynamically."""
+    found = []
+    for package in MODEL_PACKAGES:
+        found += imports_package(facts, package)
+    return found
+
+
+def rule_no_proposal_parser(facts: Facts) -> list[str]:
+    """No mapping-to-proposal parser exists in Phase 4."""
+    return [f"{facts.module}:{line} defines {name}" for name, line in facts.definitions if name == "parse_proposal"]
+
+
+AUTHORITY_PARAMETERS = {"authorization", "authorized_by", "authorized_at", "approved", "human_confirmed", "is_approved"}
+
+
+def rule_no_authority_parameters(facts: Facts) -> list[str]:
+    """No public application or interface function takes an authority-style parameter.
+
+    The legitimate 'approval' argument of authoritative commands and the
+    gate's own API are not in this set. Docstrings are never inspected.
+    """
+    if not (_in_package(facts.module, "baec_app.application") or _in_package(facts.module, "baec_app.interfaces")):
+        return []
+    return [
+        f"{facts.module}:{line} {function}({parameter})"
+        for function, parameter, line in facts.parameters
+        if parameter in AUTHORITY_PARAMETERS
+    ]
+
+
 RULES = {
     "R6 layering": rule_r6_layering,
     "R7 data-free foundation modules": rule_r7_data_free,
@@ -367,6 +422,10 @@ RULES = {
     "R2 HumanAuthorization runtime-imported only by authority.py": rule_r2_runtime_authorization_import,
     "R5 authority imported only by the command services": rule_r5_authority_importers,
     "application reads only AUTHORIZATION_MISSING": rule_rejection_kind_usage,
+    "R3 interfaces never import the data layer": rule_r3_interfaces_do_not_import_data,
+    "no model or MCP integration": rule_no_model_or_mcp_integration,
+    "no parse_proposal": rule_no_proposal_parser,
+    "no authority-style parameters": rule_no_authority_parameters,
 }
 
 
@@ -402,6 +461,11 @@ COMMANDS = {
     "AccountStateService.move_to_conditionally_dormant": AccountStateService.move_to_conditionally_dormant,
     "AccountStateService.move_to_active_opportunity": AccountStateService.move_to_active_opportunity,
     "AccountStateService.move_to_no_plausible_path": AccountStateService.move_to_no_plausible_path,
+    "HumanCommandFacade.confirm_baec": HumanCommandFacade.confirm_baec,
+    "HumanCommandFacade.record_dormancy_judgment": HumanCommandFacade.record_dormancy_judgment,
+    "HumanCommandFacade.move_to_conditionally_dormant": HumanCommandFacade.move_to_conditionally_dormant,
+    "HumanCommandFacade.move_to_active_opportunity": HumanCommandFacade.move_to_active_opportunity,
+    "HumanCommandFacade.move_to_no_plausible_path": HumanCommandFacade.move_to_no_plausible_path,
 }
 AUTHORITY_PARAMETER_NAMES = {"authorization", "approved", "authorized_by", "authorized_at", "actor", "actor_id", "confirmation"}
 
@@ -412,7 +476,9 @@ def test_command_signatures_are_exactly_self_and_approval(command):
 
 
 @pytest.mark.parametrize(
-    "service", [ClassificationService, DormancyJudgmentService, AccountStateService], ids=lambda c: c.__name__
+    "service",
+    [ClassificationService, DormancyJudgmentService, AccountStateService, HumanCommandFacade, ProposalFacade, ReadService],
+    ids=lambda c: c.__name__,
 )
 def test_no_public_service_method_accepts_authority_by_name_or_annotation(service):
     for name, method in inspect.getmembers(service, inspect.isfunction):
@@ -421,6 +487,86 @@ def test_no_public_service_method_accepts_authority_by_name_or_annotation(servic
         for parameter in inspect.signature(method).parameters.values():
             assert parameter.name not in AUTHORITY_PARAMETER_NAMES, (name, parameter.name)
             assert "HumanAuthorization" not in str(parameter.annotation), (name, parameter.name)
+
+
+def test_every_facade_method_taking_an_approval_takes_only_the_approval():
+    for name, method in inspect.getmembers(HumanCommandFacade, inspect.isfunction):
+        parameters = list(inspect.signature(method).parameters)
+        if "approval" in parameters:
+            assert parameters == ["self", "approval"], name
+    assert {n for n, m in inspect.getmembers(HumanCommandFacade, inspect.isfunction)
+            if "approval" in inspect.signature(m).parameters} == {name.split(".")[1] for name in COMMANDS if name.startswith("HumanCommandFacade")}
+
+
+def test_the_proposal_facade_has_no_command_or_approval_method():
+    for name, method in inspect.getmembers(ProposalFacade, inspect.isfunction):
+        assert "approval" not in inspect.signature(method).parameters, name
+        assert not name.startswith(("confirm", "record", "move_to", "request", "approve", "redeem")), name
+
+
+# --- the gate-free preview service (4E refinement) -------------------------------------
+
+PREVIEW_METHODS = {
+    "preview_move_to_conditionally_dormant",
+    "preview_move_to_active_opportunity",
+    "preview_move_to_no_plausible_path",
+}
+NOT_IN_PREVIEW_SERVICE = {
+    "authority", "authorize", "HumanConfirmationGate", "HumanApproval", "_gate", "gate", "redeem", "register",
+    "approve", "build_request", "_clock", "_ids", "clock", "ids", "persist_transition_to_conditionally_dormant",
+    "persist_transition_to_active_opportunity", "persist_transition_to_no_plausible_path", "save_confirmed_baec",
+    "save_classification_record", "record_dormancy_judgment", "add_account", "add_interaction",
+}
+
+
+def _class_node(module_path: str, class_name: str) -> ast.ClassDef:
+    tree = ast.parse((REPO_ROOT / module_path).read_text(encoding="utf-8"))
+    return next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name)
+
+
+def test_the_preview_service_takes_only_a_repository_and_offers_only_previews():
+    assert list(inspect.signature(AccountStatePreviewService.__init__).parameters) == ["self", "repository"]
+    public = {name for name, _ in inspect.getmembers(AccountStatePreviewService, inspect.isfunction) if not name.startswith("_")}
+    assert public == PREVIEW_METHODS
+
+
+def test_the_preview_service_source_reaches_no_gate_authority_clock_or_write():
+    node = _class_node("baec_app/application/account_state.py", "AccountStatePreviewService")
+    used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)
+    }
+    assert used & NOT_IN_PREVIEW_SERVICE == set()
+
+
+def test_each_transition_preview_has_exactly_one_implementation():
+    """The locked transition functions are called only inside AccountStatePreviewService."""
+    callers = []
+    for path in sorted((REPO_ROOT / "baec_app/application").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)] + [tree]:
+            for call in (n for n in ast.walk(cls) if isinstance(n, ast.Call)):
+                name = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", "")
+                if name.startswith("transition_to_"):
+                    callers.append((path.name, getattr(cls, "name", "<module>"), name))
+    in_classes = {(f, c, n) for f, c, n in callers if c != "<module>"}
+    assert in_classes == {("account_state.py", "AccountStatePreviewService", f"transition_to_{d}")
+                          for d in ("conditionally_dormant", "active_opportunity", "no_plausible_path")}
+    assert {(f, n) for f, c, n in callers} == {(f, n) for f, c, n in in_classes}  # no module-level callers elsewhere
+
+
+def test_the_command_service_delegates_previews_instead_of_reimplementing_them():
+    node = _class_node("baec_app/application/account_state.py", "AccountStateService")
+    defined = {n.name for n in node.body if isinstance(n, ast.FunctionDef)}
+    assert not defined & {"_require_interaction_of", "_require_evidence_interaction_of"}
+    called = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+    assert not called & {"get_interaction", "list_dormancy_judgments"}  # its reads happen in the preview service
+
+
+def test_the_classification_preview_has_one_implementation():
+    classification = _class_node("baec_app/application/classification.py", "ClassificationService")
+    preview = next(n for n in classification.body if isinstance(n, ast.FunctionDef) and n.name == "preview")
+    calls = {n.func.id for n in ast.walk(preview) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert calls == {"preview_classification"}
 
 
 def test_account_state_reads_authorization_missing_and_nothing_else():
@@ -651,6 +797,29 @@ VIOLATIONS = {
         "from baec_app.domain import enums\nk = getattr(enums, 'TransitionRejectionKind').SAME_STATE",
         rule_rejection_kind_usage,
     ),
+    "interface imports the data layer": ("baec_app.interfaces.ui", "from baec_app.data.repository import Repository", rule_r3_interfaces_do_not_import_data),
+    "interface imports the data layer via alias": ("baec_app.interfaces.mcp.tools", "import baec_app.data.database as db", rule_r3_interfaces_do_not_import_data),
+    "interface imports the data layer relatively": ("baec_app.interfaces.ui", "from ..data import repository", rule_r3_interfaces_do_not_import_data),
+    "interface imports the data layer dynamically": (
+        "baec_app.interfaces.ui",
+        "import importlib\nimportlib.import_module('baec_app.data.repository')",
+        rule_r3_interfaces_do_not_import_data,
+    ),
+    "production imports anthropic": ("baec_app.application.facades", "import anthropic", rule_no_model_or_mcp_integration),
+    "production imports an MCP server": ("baec_app.application.composition", "from mcp.server.fastmcp import FastMCP", rule_no_model_or_mcp_integration),
+    "production imports a model client dynamically": (
+        "baec_app.application.proposals",
+        "import importlib\nimportlib.import_module('anthropic')",
+        rule_no_model_or_mcp_integration,
+    ),
+    "a proposal parser is defined": ("baec_app.application.proposals", "def parse_proposal(kind, data):\n    pass", rule_no_proposal_parser),
+    "a method takes an authorization": (
+        "baec_app.application.facades",
+        "class F:\n    def confirm(self, approval, authorization=None):\n        pass",
+        rule_no_authority_parameters,
+    ),
+    "a function takes an approved flag": ("baec_app.application.dormancy", "def record(approval, *, approved=True):\n    pass", rule_no_authority_parameters),
+    "an interface takes authorized_by": ("baec_app.interfaces.ui", "def submit(authorized_by):\n    pass", rule_no_authority_parameters),
     "data imports application": ("baec_app.data.x", "import baec_app.application.requests", rule_r6_layering),
     "data imports application relatively": ("baec_app.data.x", "from ..application.errors import ApplicationError", rule_r6_layering),
     "requests imports data": ("baec_app.application.requests", "from baec_app.data.repository import Repository", rule_r7_data_free),
@@ -777,6 +946,29 @@ ALLOWED = {
         "from .enums import TransitionRejectionKind as _K\nx = _K.SAME_STATE",
         rule_rejection_kind_usage,
     ),
+    "interface imports application and domain": (
+        "baec_app.interfaces.ui",
+        "from baec_app.application import build_command_facade\nfrom baec_app.domain.models import BaecCandidate",
+        rule_r3_interfaces_do_not_import_data,
+    ),
+    "application imports the data layer (R3 is interfaces-only)": (
+        "baec_app.application.composition",
+        "from baec_app.data.repository import Repository",
+        rule_r3_interfaces_do_not_import_data,
+    ),
+    "a docstring mentioning anthropic and MCP": (
+        "baec_app.application.facades",
+        '"""Not connected to Claude (anthropic) or MCP in Phase 4."""',
+        rule_no_model_or_mcp_integration,
+    ),
+    "a docstring mentioning parse_proposal": ("baec_app.application.proposals", '"""There is no parse_proposal in Phase 4."""', rule_no_proposal_parser),
+    "a command takes only an approval": ("baec_app.application.facades", "def confirm_baec(self, approval):\n    pass", rule_no_authority_parameters),
+    "a docstring mentioning authorization": (
+        "baec_app.application.facades",
+        'def f(self, session):\n    """Builds the authorization; approved=True has no meaning here."""',
+        rule_no_authority_parameters,
+    ),
+    "a private helper is not public API": ("baec_app.application.authority", "def _build(authorization):\n    pass", rule_no_authority_parameters),
     "a docstring mentioning the gate key": (
         "baec_app.application.dormancy",
         '"""The _GATE_KEY stays private to approval.py."""',

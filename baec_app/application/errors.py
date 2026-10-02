@@ -98,3 +98,11 @@ class RequestNotCoherent(ApplicationError):
     def __init__(self, result: TransitionResult) -> None:
         super().__init__(result.rejection_text)
         self.result = result
+
+
+class ReadOnlyConnectionRequired(ApplicationError):
+    """The proposal/read side was given a connection that is not a current-schema, query-only SQLite connection."""
+
+
+class ReadDatabaseUnavailable(ApplicationError):
+    """open_read_connection could not open an existing database file read-only."""

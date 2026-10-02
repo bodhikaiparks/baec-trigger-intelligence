@@ -52,12 +52,25 @@ if TYPE_CHECKING:
 _ONLY_AUTHORIZATION_MISSING = (TransitionRejectionKind.AUTHORIZATION_MISSING,)
 
 
-class AccountStateService:
-    def __init__(self, repository: Repository, gate: HumanConfirmationGate, clock: Clock, ids: IdFactory) -> None:
+def require_coherent_preview(preview: TransitionResult) -> None:
+    """The single registration rule: the locked preview's only rejection is the missing authorization.
+
+    Used both before registering a request and before producing a deterministic proposal.
+    """
+    if preview.rejections != _ONLY_AUTHORIZATION_MISSING:
+        raise RequestNotCoherent(preview)
+
+
+class AccountStatePreviewService:
+    """The one implementation of the three read-only transition previews.
+
+    Holds only a repository for reads: no gate, clock, identifier factory,
+    authority path, approval path, or write method. Used by AccountStateService
+    on the command side and by ProposalFacade over a query-only repository.
+    """
+
+    def __init__(self, repository: Repository) -> None:
         self._repository = repository
-        self._gate = gate
-        self._clock = clock
-        self._ids = ids
 
     # --- referential checks the domain cannot make ---------------------------
 
@@ -129,13 +142,52 @@ class AccountStateService:
             non_evaluation_evidence=non_evaluation_evidence,
         )
 
-    # --- request opening --------------------------------------------------------
 
-    @staticmethod
-    def _require_coherent(preview: TransitionResult) -> None:
-        """The single registration rule: the locked preview's only rejection is the missing authorization."""
-        if preview.rejections != _ONLY_AUTHORIZATION_MISSING:
-            raise RequestNotCoherent(preview)
+class AccountStateService:
+    def __init__(self, repository: Repository, gate: HumanConfirmationGate, clock: Clock, ids: IdFactory) -> None:
+        self._repository = repository
+        self._gate = gate
+        self._clock = clock
+        self._ids = ids
+        self._previews = AccountStatePreviewService(repository)
+
+    # --- read-only previews: delegated to the one preview implementation -------
+
+    def preview_move_to_conditionally_dormant(
+        self,
+        account_id: str,
+        *,
+        baec_id: str,
+        judgment_id: int,
+        non_evaluation_evidence: NonEvaluationEvidence | None = None,
+    ) -> TransitionResult:
+        return self._previews.preview_move_to_conditionally_dormant(
+            account_id, baec_id=baec_id, judgment_id=judgment_id, non_evaluation_evidence=non_evaluation_evidence
+        )
+
+    def preview_move_to_active_opportunity(
+        self, account_id: str, *, evaluation_evidence: EvaluationEvidence | None
+    ) -> TransitionResult:
+        return self._previews.preview_move_to_active_opportunity(account_id, evaluation_evidence=evaluation_evidence)
+
+    def preview_move_to_no_plausible_path(
+        self,
+        account_id: str,
+        *,
+        ground: NoPlausiblePathGround | None,
+        reason: str | None,
+        non_evaluation_evidence: NonEvaluationEvidence | None = None,
+        basis_interaction_id: str | None = None,
+    ) -> TransitionResult:
+        return self._previews.preview_move_to_no_plausible_path(
+            account_id,
+            ground=ground,
+            reason=reason,
+            non_evaluation_evidence=non_evaluation_evidence,
+            basis_interaction_id=basis_interaction_id,
+        )
+
+    # --- request opening --------------------------------------------------------
 
     def _register(
         self, session: InteractionSession, kind: RequestKind, origin: ProposalOrigin, payload, preview: TransitionResult
@@ -171,7 +223,7 @@ class AccountStateService:
         preview = self.preview_move_to_conditionally_dormant(
             account_id, baec_id=baec_id, judgment_id=judgment_id, non_evaluation_evidence=non_evaluation_evidence
         )
-        self._require_coherent(preview)  # before the payload: the locked domain decides first
+        require_coherent_preview(preview)  # before the payload: the locked domain decides first
         payload = MoveToDormantPayload(
             account_id=account_id, baec_id=baec_id, judgment_id=judgment_id, non_evaluation_evidence=non_evaluation_evidence
         )
@@ -187,7 +239,7 @@ class AccountStateService:
     ) -> ApprovalRequest:
         self._require_session(session)
         preview = self.preview_move_to_active_opportunity(account_id, evaluation_evidence=evaluation_evidence)
-        self._require_coherent(preview)  # before the payload: the locked domain decides first
+        require_coherent_preview(preview)  # before the payload: the locked domain decides first
         payload = MoveToActivePayload(account_id=account_id, evaluation_evidence=evaluation_evidence)
         return self._register(session, RequestKind.MOVE_TO_ACTIVE_OPPORTUNITY, origin, payload, preview)
 
@@ -210,7 +262,7 @@ class AccountStateService:
             non_evaluation_evidence=non_evaluation_evidence,
             basis_interaction_id=basis_interaction_id,
         )
-        self._require_coherent(preview)  # before the payload: the locked domain decides first
+        require_coherent_preview(preview)  # before the payload: the locked domain decides first
         payload = MoveToNoPlausiblePathPayload(
             account_id=account_id,
             ground=ground,
