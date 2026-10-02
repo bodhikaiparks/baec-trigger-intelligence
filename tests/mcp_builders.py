@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import sys
 from pathlib import Path
 
 import anyio
 from mcp import Client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from baec_app.data.database import open_database
 from baec_app.data.repository import Repository
@@ -58,8 +60,25 @@ def run(async_function):
 
 
 @contextlib.asynccontextmanager
-async def connected(path: str):
+async def connected(path: str, **client_options):
     """Open the MCP runtime in the event-loop thread and connect an in-process client."""
     with open_mcp_runtime(path) as runtime:
-        async with Client(runtime.server) as client:
+        async with Client(runtime.server, **client_options) as client:
             yield runtime, client
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def server_command(path: str, module: str = "baec_app.mcp") -> list[str]:
+    """The documented invocation: python -m baec_app.mcp --database PATH."""
+    return [sys.executable, "-m", module, "--database", str(path)]
+
+
+@contextlib.asynccontextmanager
+async def stdio_connected(path: str, errlog, module: str = "baec_app.mcp", **client_options):
+    """Launch the server as a child process and connect through the SDK's real stdio client transport."""
+    command = server_command(path, module)
+    parameters = StdioServerParameters(command=command[0], args=command[1:], cwd=str(REPO_ROOT))
+    async with Client(stdio_client(parameters, errlog=errlog), **client_options) as client:
+        yield client
