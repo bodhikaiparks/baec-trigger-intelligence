@@ -1,7 +1,7 @@
 # Phase 5 Design: MCP Core
 
-> **Approved design — not implemented.**
-> This document is the approved Phase 5 MCP Core architecture. No Phase 5 code exists. Nothing here describes implemented or tested behavior.
+> **Approved design — implemented; see `docs/PHASE5_MCP_CORE_TRACEABILITY.md`.**
+> This document is the approved Phase 5 MCP Core architecture, kept as approved. Where the implementation refines it, the traceability document records the difference.
 
 **Project:** BAEC Trigger Intelligence
 **Baseline:** `phase-4-application-boundary` (commit `cf73f2e`), schema version 4, 2659 tests passing.

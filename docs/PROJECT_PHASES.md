@@ -17,6 +17,7 @@ Phase numbers are implementation-planning labels for this software. They are not
 | Phase 3 hardening | RC-33 schema guards | `phase-3-persistence-hardening` | `3e68030` | Complete |
 | Phase 3 hardening | Evidence fidelity | `phase-3-evidence-fidelity-hardening` | `7a01c24` | Complete |
 | Phase 4 | Application & Human Authorization Boundary | `phase-4-application-boundary` | the tagged commit | Complete |
+| Phase 5 | MCP Core (read-only, deterministic) | `phase-5-mcp-core` | the tagged commit | Complete |
 
 Existing tags and commits are not renamed, renumbered, moved, or rewritten.
 
@@ -90,12 +91,30 @@ Contents: `baec_app/application/` (no change to the domain, data, schema, or see
 
 Phase 4 provides application-level authority separation and accident resistance. It does not authenticate anyone, does not defend against malicious code running inside the trusted process, and does not connect any model or MCP input. How the design maps to code and tests is recorded in `docs/PHASE4_IMPLEMENTATION_TRACEABILITY.md`.
 
-## 6. Future phases
+## 6. Phase 5: MCP Core
+
+Final tag: `phase-5-mcp-core`. The annotated tag identifies the final Phase 5 checkpoint (the 5E commit). Status: Complete.
+
+Design approved in `docs/PHASE5_MCP_CORE_DESIGN.md`, then implemented in reviewed increments:
+
+| Increment | Commit | Contents | Tests |
+|---|---|---|---|
+| 5A | `6c6eb7bf578487dcb2047080d2501d7fe6bd2797` | Docs: approve Phase 5 MCP Core design | baseline: 2659 passed |
+| 5B | `c15f928136fe1219d7f395e7636035a97fc5103a` | Phase 5B: MCP read-only resource core | checkpoint: 2956 passed, 1 expected xfail |
+| 5C | `fcc84bda4f86392e4bc78f70455d0a71e9fae13f` | Phase 5C: deterministic MCP preview tools | checkpoint: 3013 passed, 0 xfailed |
+| 5D | `97460133cb37e399a6ece197064d78d273766556` | Phase 5D: stdio runtime and adversarial hardening | checkpoint: 3248 passed, 0 xfailed |
+| 5E | this tagged commit (referenced by `phase-5-mcp-core`) | Docs: finalize Phase 5 MCP Core. Final documentation and checkpoint increment: traceability, usage documentation, and this record | 3248 passed, 0 xfailed |
+
+Contents: `baec_app/mcp/` exposes a read-only, deterministic MCP server over stdio. It has 8 resources, 4 preview tools, and 0 prompts, and no proposal, request, approval, or write tools. It is pinned to `mcp[cli]==2.2.0`. The only change outside `baec_app/mcp/` is an additive re-export of six existing types from `baec_app/application/__init__.py`. The domain, data layer, schema, and seed data are unchanged.
+
+MCP Core exposes BAEC information and deterministic application reasoning; it does not grant authority. An MCP tool call is not human approval. Phase 5 does not authenticate anyone, connects no model, and makes no claim about BAEC theory. How the design maps to code and tests is recorded in `docs/PHASE5_MCP_CORE_TRACEABILITY.md`. Operator usage is described in `docs/MCP_USAGE.md`.
+
+## 7. Future phases
 
 Later phase numbers are planning labels only. A phase is defined by its approved design document, not by its number. A future phase may be renumbered, split, or dropped before it is approved. Nothing is built ahead of the approved phase (`CLAUDE.md`).
 
-Before any model or MCP proposal input is enabled, persistent AI-origin provenance must be designed and implemented (Phase 4 design §18).
+Before any model or MCP proposal input is enabled, persistent AI-origin provenance must be designed and implemented (Phase 4 design §18; Phase 5 design §2).
 
-## 7. What a checkpoint does and does not show
+## 8. What a checkpoint does and does not show
 
 A checkpoint shows that the software at that commit passed its own tests on synthetic data. It does not show that BAEC or CEE is valid, that BAECs predict evaluation or purchase, that the software improves sales performance, or that the software is secure for production use (Research Contract §13).
