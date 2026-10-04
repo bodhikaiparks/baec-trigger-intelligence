@@ -1,7 +1,7 @@
 # Phase 6 Design: Structured Claude Analysis and AI Provenance
 
-> **Approved design — not implemented.**
-> This document is the approved Phase 6 architecture. No Phase 6 code, schema change, or dependency exists. Nothing here describes implemented or tested behavior.
+> **Approved design — subsequently implemented and evolved through Phase 6B/6C; prospective amendments are explicitly marked below.**
+> This document is the approved Phase 6 architecture as written before implementation. Its body is kept as originally approved for historical traceability; it does not itself describe implemented or tested behavior. Later changes appear only as explicitly marked amendments (Phase 6D: §8 failure-code note, §9 grounding amendment).
 
 **Project:** BAEC Trigger Intelligence
 **Baseline:** `phase-5-mcp-core` (commit `4e7ff65`), schema version 4, 3248 tests passing.
@@ -221,13 +221,25 @@ Excerpt text has no length limit, because it is source text. The limits are arbi
 
 Where Structured Outputs support it, the same limits also appear in the output schema. The API may not enforce them, so stage 3 is authoritative.
 
+> **Note (Phase 6D-A; failure-code format, prospective).** The code examples in the two tables above (for example `excerpt_not_in_source:<id>`, `text_too_long:<field>`, `bad_excerpt_refs:<criterion>`) are kept unchanged for historical traceability. They do not match the implementation, which has used fixed unsuffixed tokens since 6C-B. For Phase 6D and later:
+> - failure codes use a closed, status-specific vocabulary;
+> - codes never contain model-authored, excerpt, or source identifiers, or any other variable value;
+> - `:<id>`-style suffixes are superseded;
+> - `docs/PHASE6D_AI_BEHAVIOR_HARDENING_DESIGN.md` (§5) is authoritative for the prospective failure-code contract.
+
 ## 9. AI-versus-buyer provenance rules
 
 - A `SourceExcerpt.text` is a pointer to immutable source text. Its relevance, its speaker, and its meaning are AI_INFERENCE (RC-32).
 - A source excerpt is never promoted automatically to a domain `EvidenceExcerpt` with `BUYER_FACT` or `SELLER_OBSERVATION` provenance. Only a later human-authored path may cite the same source text, and that path is deferred.
 - `normalized_condition`, `normalized_evaluation_link`, explanations, and uncertainties are AI-derived text. They never count as source evidence, even when they repeat source words.
 - The existing `baec_records.normalized_*` columns (`AiDerivedText`) are not written by Phase 6 (§21 C3).
-- Thresholds and negation stay exact in the excerpts, never in the normalizations. Evaluation (§20) checks whether normalizations distort them.
+- Thresholds and negation stay exact in the excerpts, never in the normalizations. Evaluation (§20) checks whether normalizations distort them. *(Superseded in part by Phase 6D; see the amendment below.)*
+
+> **Amendment (Phase 6D-A; supersedes part of the bullet above).**
+> **Original decision (kept above for the record):** distortion of thresholds in normalizations was checked only by evaluation (§20), not by production validation.
+> **Superseded for numbers and comparators:** Phase 6C demonstrated that an accepted structured artifact could contain a source-unsupported numeric normalization that was caught only by the deterministic evaluation layer. Phase 6D therefore moves numeric and comparator grounding into production semantic validation (stage 3, validation `baec-extraction-validation/v2`). Model-authored text (both normalizations, explanations, and uncertainties) may restate source-grounded numeric information, but may not introduce unsupported numeric assertions, alter a grounded magnitude or unit, or change, drop, or add a threshold comparator. A violation is `semantic_validation_failure` with no artifact (D1).
+> **Not superseded:** negation, direction, and other distortion outside the closed numeric and comparator rules remain evaluation-only (§20). Excerpts remain the exact source.
+> **Scope:** this is an IMPLEMENTATION safeguard supporting RC-18, based on implementation evidence from a synthetic evaluation. It is not a research finding. Specification: `docs/PHASE6D_AI_BEHAVIOR_HARDENING_DESIGN.md` §4.
 
 ## 10. Persistent provenance (6B; schema version 5)
 
