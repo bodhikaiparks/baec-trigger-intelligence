@@ -446,6 +446,10 @@ The builder uses an allowlist: every string is an identifier, version label, clo
 - **Console:** never prints the whole JSON report or an absolute local path. After a successful write it prints only the sanitized report filename and the report SHA-256.
 - **Workflow:** live report → ignored working location → review → explicit promotion. Copying a reviewed sanitized report into a tracked evidence directory is a separate, explicitly approved step. Runtime reports are never committed automatically.
 
+> **Phase 6D-C1 clarification (amendment; label: Evaluation rule).**
+>
+> A live evaluation requires a clean source working tree before any provider attempt. This prevents spending API calls on evidence that would already fail the Phase 6D-C2 comparability precondition. Git-ignored files do not make the tree dirty. `source.working_tree_clean` stays in the report schema, and is therefore `true` in every live report that passes the gate. This is an evaluation-integrity and cost-control safeguard, not a research claim.
+
 ## 10. Comparison from reports
 
 **Label: Evaluation rule.**

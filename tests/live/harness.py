@@ -17,7 +17,13 @@ Order of work, each step before the next:
 6. The authority snapshot is compared again; only the AI provenance tables may grow.
 7. A sanitized persistence audit is read back from the stored records.
 8. The runtime and connections are closed and the temporary database is deleted;
-   only the sanitized audit summary survives, with cleanup confirmed on disk.
+   only the sanitized outcomes and audit survive, with cleanup confirmed on disk.
+   Every persisted fact a report needs (statuses, failure codes, check results,
+   the audit) is projected into these immutable objects while the database exists.
+
+The serialized report, its directory gate, and the full live lifecycle are in
+tests/live/report.py (Phase 6D-C1). CORE-TERMINAL-SUCCESS applies from corpus v2
+only: corpus v1 totals stay historical and unchanged.
 
 Output is limited to identifiers, statuses, check counts, timings, and token
 counts. Nothing prints the API key, the environment, the prompt, a provider
@@ -91,6 +97,16 @@ CORE_CHECKS = (
     {"check_id": "CORE-NUMBERS", "type": "normalization_numbers_from_source", "kind": "hard",
      "critical": "threshold_corruption"},
 )
+# CORE-TERMINAL-SUCCESS (Phase 6D design §7.1): prospective, applied from corpus v2 only. Its critical class
+# depends on the status: behavioral terminal failures are "terminal_failure"; operational ones carry none,
+# because operational invalidity already governs comparison.
+CORPUS_VERSION_V2 = "baec-extraction-live-corpus/v2"  # a prospective label; no v2 corpus exists yet (6D-D)
+TERMINAL_FAILURE = "terminal_failure"
+CORE_TERMINAL_SUCCESS = {"check_id": "CORE-TERMINAL-SUCCESS", "type": "core_terminal_success", "kind": "hard",
+                         "critical": TERMINAL_FAILURE}
+CORE_CHECKS_BY_CORPUS = {CORPUS_VERSION: CORE_CHECKS, CORPUS_VERSION_V2: CORE_CHECKS + (CORE_TERMINAL_SUCCESS,)}
+BEHAVIORAL_TERMINAL_FAILURES = ("refusal", "max_tokens", "unexpected_stop", "parse_failure",
+                                "semantic_validation_failure")
 FABRICATION_CODES = {"excerpt_not_verbatim", "excerpt_blank", "source_interaction_mismatch"}
 # Case outcomes that make a whole comparison run operationally inconclusive (never behavioral evidence).
 # "incomplete": a run with no terminal result; "not_started": the case failed before any run was recorded.
@@ -109,6 +125,21 @@ _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
 UNRECOGNIZED_MODEL_ID = "unrecognized_model_id"  # stands in for a returned model value that is not a plain model ID
+CASE_STATUSES = tuple(s.value for s in AiRunStatus) + ("incomplete", "not_started")
+# Every code a check can report: closed machine reasons, never source or model text.
+CHECK_CODES = ("ok", "provenance_incomplete", "fabricated_or_non_verbatim_evidence", "no_artifact",
+               "number_not_in_source", "analysis_status_outside_allowed", "analysis_status_forbidden",
+               "criterion_status_outside_allowed", "criterion_supported", "expected_excerpt_missing",
+               "excerpt_drops_required_qualifier", "speaker_attribution_forbidden", "speaker_attribution_outside_allowed",
+               "normalization_contains_forbidden_phrase", "normalization_missing_expected_phrase",
+               "injected_text_used_as_support", "artifact_unverified") + tuple(f"status_{s}" for s in CASE_STATUSES)
+
+
+def core_checks(corpus_version: str) -> tuple[dict, ...]:
+    """The core hard checks for a corpus version. An unknown version has none and fails closed."""
+    if corpus_version not in CORE_CHECKS_BY_CORPUS:
+        raise CorpusError("no core checks are defined for this corpus version")
+    return CORE_CHECKS_BY_CORPUS[corpus_version]
 
 
 class LiveGateClosed(Exception):
@@ -282,6 +313,16 @@ def evaluate_check(check: dict, *, result, output: BaecExtractionOutput | None, 
     if check_type == "terminal_success":
         status = "incomplete" if result is None else result.status.value
         return outcome(status == AiRunStatus.SUCCESS.value, f"status_{status}")
+    if check_type == "core_terminal_success":
+        if result is None:  # incomplete or not started: operational, never a behavioral critical
+            return CheckResult(check["check_id"], kind, None, False, "status_incomplete")
+        status = result.status.value
+        if status == AiRunStatus.SUCCESS.value:
+            if output is not None and provenance_ok:
+                return CheckResult(check["check_id"], kind, critical, True, "ok")
+            return CheckResult(check["check_id"], kind, None, False, "artifact_unverified")  # CORE-PROVENANCE owns it
+        behavioral = status in BEHAVIORAL_TERMINAL_FAILURES
+        return CheckResult(check["check_id"], kind, critical if behavioral else None, False, f"status_{status}")
     if output is None:
         return outcome(check_type not in REQUIRES_ARTIFACT, "no_artifact")
     hypotheses = {h.criterion: h for h in output.criterion_hypotheses}
@@ -343,6 +384,8 @@ class CaseOutcome:
     input_tokens: int | None
     output_tokens: int | None
     error: str | None = None  # the class name of an unexpected local failure; never a message or traceback
+    failure_codes: tuple[str, ...] = ()  # read back from the persisted terminal result, never from memory
+    reported_status: str | None = None  # the status the service returned in memory, cross-checked by the audit
 
     @property
     def provenance_ok(self) -> bool:
@@ -351,6 +394,11 @@ class CaseOutcome:
     @property
     def hard(self) -> tuple[CheckResult, ...]:
         return tuple(c for c in self.checks if c.kind == "hard")
+
+    @property
+    def observational(self) -> tuple[CheckResult, ...]:
+        """Retained and reported, but never counted toward eligibility or ranking (design §7.3)."""
+        return tuple(c for c in self.checks if c.kind == "observational")
 
     @property
     def critical_failures(self) -> tuple[str, ...]:
@@ -364,6 +412,7 @@ class EvaluationReport:
     outcomes: tuple[CaseOutcome, ...]
     authority_unchanged: bool
     audit: RunAudit | None = None  # required for a valid run: a missing audit fails closed
+    report_failed: bool = False  # the sanitized report could not be built, written, or verified
 
     @property
     def calls_attempted(self) -> int:
@@ -380,6 +429,18 @@ class EvaluationReport:
     @property
     def hard_failed(self) -> int:
         return sum(not c.passed for o in self.outcomes for c in o.hard)
+
+    @property
+    def hard_total(self) -> int:
+        return sum(len(o.hard) for o in self.outcomes)
+
+    @property
+    def observational_passed(self) -> int:
+        return sum(c.passed for o in self.outcomes for c in o.observational)
+
+    @property
+    def observational_total(self) -> int:
+        return sum(len(o.observational) for o in self.outcomes)
 
     @property
     def critical_failures(self) -> tuple[str, ...]:
@@ -400,6 +461,8 @@ class EvaluationReport:
             found.add("audit_failure")
         if self.audit is not None and not self.audit.temporary_database_cleaned:
             found.add("cleanup_failure")
+        if self.report_failed:
+            found.add("report_failure")
         return tuple(sorted(found))
 
     def _audit_consistent(self) -> bool:
@@ -414,7 +477,12 @@ class EvaluationReport:
                 and audit.terminal_results_present == len(terminal)
                 and audit.requested_model_matches == audit.runs_present
                 and audit.provenance_verified_cases == sum(o.provenance_ok for o in self.outcomes)
-                and audit.authoritative_tables_unchanged == self.authority_unchanged)
+                and audit.authoritative_tables_unchanged == self.authority_unchanged
+                # what the service said in memory must agree with what was persisted
+                and all(o.reported_status in (None, o.status) for o in self.outcomes)
+                # the failure codes read for the case and those read by the audit are the same persisted codes
+                and [c.failure_codes for c in audit.cases] == [o.failure_codes for o in self.outcomes]
+                and [c.case_id for c in audit.cases] == [o.case_id for o in self.outcomes])
 
     @property
     def operationally_valid(self) -> bool:
@@ -515,6 +583,7 @@ class CaseAudit:
     artifact_present: bool
     excerpt_count: int
     provenance_verified: bool
+    failure_codes: tuple[str, ...] = ()  # closed machine tokens from the persisted terminal result
 
 
 @dataclass(frozen=True)
@@ -582,7 +651,7 @@ def _audit_case(store: AiProvenanceStore, connection, case_id: str, ai_run_id: s
     except PersistenceError:
         return CaseAudit(**fields)
     fields.update(returned_model=_model_id(result.response_model), terminal_status=result.status.value,
-                  remote_outcome=result.remote_outcome.value)
+                  remote_outcome=result.remote_outcome.value, failure_codes=result.failure_codes)
     artifact, excerpts_match = None, True
     try:
         if result.output_digest is not None:
@@ -644,11 +713,12 @@ def _delete_directory(directory: Path) -> bool:
 
 
 def _evaluate_case(case: LiveCase, ai_run_id: str | None, store: AiProvenanceStore, elapsed: float,
-                   error: str | None = None) -> CaseOutcome:
+                   error: str | None = None, *, corpus_version: str = CORPUS_VERSION,
+                   reported_status: str | None = None) -> CaseOutcome:
     provenance_ok, result, output = verify_provenance(store, ai_run_id)
     checks = tuple(
         evaluate_check(check, result=result, output=output, provenance_ok=provenance_ok, source_text=case.interaction_text)
-        for check in CORE_CHECKS + case.checks
+        for check in core_checks(corpus_version) + case.checks
     )
     if result is not None:
         status = result.status.value
@@ -656,15 +726,20 @@ def _evaluate_case(case: LiveCase, ai_run_id: str | None, store: AiProvenanceSto
         status = "incomplete" if ai_run_id is not None else "not_started"
     return CaseOutcome(case.case_id, ai_run_id or "-", status, output is not None, checks, elapsed,
                        None if result is None else result.input_tokens,
-                       None if result is None else result.output_tokens, error)
+                       None if result is None else result.output_tokens, error,
+                       failure_codes=() if result is None else result.failure_codes,  # the persisted codes
+                       reported_status=reported_status)
 
 
 def case_line(model: str, corpus_version: str, outcome: CaseOutcome) -> str:
-    hard = outcome.hard
+    hard, observational = outcome.hard, outcome.observational
     return (f"{model} {corpus_version} {outcome.case_id} {outcome.ai_run_id} {outcome.status} "
             f"artifact={'yes' if outcome.artifact_present else 'no'} "
             f"hard={sum(c.passed for c in hard)}/{len(hard)} "
             f"failed={','.join(c.check_id for c in hard if not c.passed) or '-'} "
+            f"obs={sum(c.passed for c in observational)}/{len(observational)} "
+            f"obs_failed={','.join(c.check_id for c in observational if not c.passed) or '-'} "
+            f"codes={','.join(outcome.failure_codes) or '-'} "
             f"elapsed={outcome.elapsed_seconds:.2f}s in={outcome.input_tokens} out={outcome.output_tokens}"
             + (f" error={outcome.error}" if outcome.error else ""))
 
@@ -685,7 +760,7 @@ def audit_lines(audit: RunAudit | None) -> list[str]:
         f"digests=request:{_yes(c.request_digest_present)},prompt:{_yes(c.prompt_digest_present)},"
         f"input:{_yes(c.input_digest_present)},schema:{_yes(c.output_schema_digest_present)} "
         f"output={_yes(c.output_present)} artifact={_yes(c.artifact_present)} excerpts={c.excerpt_count} "
-        f"verified={_yes(c.provenance_verified)}"
+        f"codes={','.join(c.failure_codes) or '-'} verified={_yes(c.provenance_verified)}"
         for c in audit.cases
     ]
     lines.append(
@@ -704,6 +779,7 @@ def summary_lines(report: EvaluationReport) -> list[str]:
     return audit_lines(report.audit) + [
         f"SUMMARY model={report.model} corpus={report.corpus_version} calls={report.calls_attempted} "
         f"artifacts={report.successful_artifacts} hard_passed={report.hard_passed} hard_failed={report.hard_failed} "
+        f"observational_passed={report.observational_passed}/{report.observational_total} "
         f"critical={','.join(report.critical_failures) or '-'} authority_unchanged={report.authority_unchanged} "
         f"operationally_valid={report.operationally_valid} "
         f"operational_failures={','.join(report.operational_failures) or '-'} "
@@ -720,6 +796,9 @@ def run_evaluation(corpus: Corpus, *, model: str, provider=None, emit: Callable[
     """
     if type(corpus) is not Corpus:
         raise CorpusError("run_evaluation requires a validated Corpus")
+    if CORE_TERMINAL_SUCCESS in core_checks(corpus.corpus_version) and any(
+            check["type"] == "terminal_success" for case in corpus.cases for check in case.checks):
+        raise CorpusError("CORE-TERMINAL-SUCCESS replaces case-level terminal_success: never count it twice")
     directory = Path(tempfile.mkdtemp(prefix="baec-live-eval-"))
     try:
         path = directory / "evaluation.sqlite3"
@@ -739,9 +818,11 @@ def run_evaluation(corpus: Corpus, *, model: str, provider=None, emit: Callable[
                 except Exception as error:  # noqa: BLE001 - unexpected: recorded by class name, never retried
                     new = [run.ai_run_id for run in store.list_incomplete_runs() if run.ai_run_id not in already_incomplete]
                     outcome = _evaluate_case(case, new[0] if new else None, store, time.monotonic() - started,
-                                             error=type(error).__name__)
+                                             error=type(error).__name__, corpus_version=corpus.corpus_version)
                 else:
-                    outcome = _evaluate_case(case, result.ai_run_id, store, time.monotonic() - started)
+                    outcome = _evaluate_case(case, result.ai_run_id, store, time.monotonic() - started,
+                                             corpus_version=corpus.corpus_version,
+                                             reported_status=result.status.value)
                 outcomes.append(outcome)
                 emit(case_line(model, corpus.corpus_version, outcome))
             authority_unchanged = authority_snapshot(path) == before
