@@ -567,7 +567,7 @@ def test_the_validator_version_is_not_part_of_the_request(world):
     provider = FakeProvider(response(as_text(output())))
     result = world.run(provider)
     run = world.store.get_run(result.ai_run_id)
-    assert run.request_digest == "298bf6aac27bb69df99412d63c9586c79697d7342f5bb1a00dbabdb56b9c20a8"
+    assert run.request_digest == "e142cb5c71c9b173931f04901cc18b1352d97ed78a3eba916c86850e5e71cdde"
     assert "validation" not in provider.invoked[0].to_json_object()
 
 

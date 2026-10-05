@@ -21,7 +21,7 @@ import pytest
 from baec_app.ai import service as service_module
 from baec_app.ai.contracts import CRITERIA, BaecExtractionOutput
 from baec_app.ai.grounding import GROUNDING_FAILURE_CODES
-from baec_app.ai.prompts import SYSTEM_PROMPT_V1
+from baec_app.ai.prompts import SYSTEM_PROMPT
 from baec_app.ai.provider import ProviderApiError, ProviderTransportError
 from baec_app.data.ai_provenance import AiRunStatus
 from baec_app.data.database import AI_PROVENANCE_TABLES, DATA_TABLES, RepositoryNotFoundError, connect, schema_version
@@ -269,7 +269,7 @@ def test_the_harness_uses_the_production_runtime_on_a_fresh_temporary_database(m
     assert not path.exists() and not path.parent.exists()  # deleted after the run
     assert REPO_ROOT not in path.parents and path != REPO_ROOT / "var" / "baec_dev.sqlite3"
     assert "provider" in kwargs and len(specs) == 14
-    assert all(s.system == SYSTEM_PROMPT_V1 and s.api_method == "messages.create" for s in specs)
+    assert all(s.system == SYSTEM_PROMPT and s.api_method == "messages.create" for s in specs)
     harness_source = (REPO_ROOT / "tests" / "live" / "harness.py").read_text(encoding="utf-8")
     assert "import anthropic" not in harness_source and "messages.create(" not in harness_source
 
@@ -490,7 +490,7 @@ def test_output_contains_only_identifiers_statuses_counts_and_timings(monkeypatc
     report, lines = run(overrides={"C03": raw})
     printed = "\n".join(lines)
     assert len(lines) == 14 + 14 + 2 and lines[-1].startswith("SUMMARY ")  # cases, case audits, audit summary, summary
-    for forbidden in (FAKE_KEY, marker, SYSTEM_PROMPT_V1[:40], "Buyer:", "Seller:", "thinking", "Traceback",
+    for forbidden in (FAKE_KEY, marker, SYSTEM_PROMPT[:40], "Buyer:", "Seller:", "thinking", "Traceback",
                       "ANTHROPIC_API_KEY", "BAEC_LIVE"):
         assert forbidden not in printed
     for case in load_corpus().cases:
@@ -717,7 +717,7 @@ def test_a_refusal_on_the_injection_case_passes_core_provenance_and_its_prohibit
 
 LOCKED_VERSIONS = {
     "request_spec_version": "baec-ai-request-spec/v1",
-    "prompt_version": "baec-extraction-prompt/v1",
+    "prompt_version": "baec-extraction-prompt/v2",
     "input_version": "baec-extraction-input/v1",
     "output_schema_version": "baec-extraction-output/v1",
     "canonicalization_version": "baec-canonical-json/v1",
@@ -1042,7 +1042,7 @@ def test_no_text_prompt_response_or_secret_reaches_the_audit_or_the_console(monk
     printed = "\n".join(lines)
     corpus = load_corpus()
     for text in (audit_text, printed):
-        for forbidden in (FAKE_KEY, marker, SYSTEM_PROMPT_V1[:40], "Buyer:", "Seller:", "canonical_result", "Traceback",
+        for forbidden in (FAKE_KEY, marker, SYSTEM_PROMPT[:40], "Buyer:", "Seller:", "canonical_result", "Traceback",
                           "evaluation.sqlite3", "baec-live-eval-", "ANTHROPIC_API_KEY"):
             assert forbidden not in text
         for case in corpus.cases:

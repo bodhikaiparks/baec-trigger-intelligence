@@ -612,3 +612,11 @@ Phase 6D does not weaken any of the following:
 - the read-only MCP Core.
 
 AI remains unexposed through MCP. The prompt, input, output schema, request specification, timeout, and retry policy are unchanged.
+
+> **Phase 6D-E4 clarification (amendment; label: Implementation safeguard).**
+>
+> - **E2 (one authorized live verification of `claude-sonnet-5-5` on `baec-extraction-live-corpus/v2` at `277ab0f`, 17 calls):** operational verification PASS; behavioral eligibility FAIL (8 `terminal_failure` cases). Sanitized report SHA-256 `166d0703b52c80571c16092d53ac45ccd84f1204f787cb5ddc730bebfbc14057`; the runtime report itself is not committed.
+> - **E3 (offline diagnosis):** no deterministic validator false positive was found under the locked rules. 10 of the 11 grounding codes arose in explanation and uncertainty text, which `baec-extraction-prompt/v1` did not ground: v1 required exact threshold fidelity only for the two normalizations.
+> - **Decision:** validation v2 is preserved unchanged, and `baec-extraction-prompt/v2` states the grounding rules for every model-authored free-text field (both normalizations, every explanation, every uncertainty): no unsupported number, number word, percentage, currency amount, unit-bearing quantity, or count; magnitude, numeric kind, unit, and comparator preserved when a supported value is mentioned; `past`, `beyond`, `within`, and `over` repeated exactly; and unnecessary numeric restatement avoided. The task, input, output schema, request specification, canonicalization, timeout, and retry policy are unchanged; the prompt digest and the request digest change. Prompt v1 stays frozen as the historical identity of the Phase 6C and E2 runs.
+>
+> Prompt v2 is an alignment correction discovered through live verification, not a BAEC research finding. This supersedes, for prompt identity only, the statements in §12 and above that the prompt is unchanged.

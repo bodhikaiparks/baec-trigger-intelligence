@@ -7,7 +7,7 @@ import pytest
 
 from baec_app.ai.canonical import canonical_digest, canonical_json, sha256_text
 from baec_app.ai.contracts import BaecExtractionOutput
-from baec_app.ai.prompts import SYSTEM_PROMPT_V1
+from baec_app.ai.prompts import SYSTEM_PROMPT
 from baec_app.ai.provenance import RemoteOutcome, RunStatus
 from baec_app.ai.provider import ProviderApiError, ProviderTransportError
 from baec_app.ai.service import AiRequestError, ExtractionService
@@ -29,7 +29,7 @@ from tests.ai_builders import (  # noqa: F401
 )
 from tests.application_builders import FixedClock
 
-PROMPT_DIGEST = "b1782f1ce0afdd96eb335cece03912b9aa53c3a5ac3c71a2017f1cbe9ba5eadd"
+PROMPT_DIGEST = "d6296491be408c9a4b9b9561e6e207ff8890eb0f0460ce0c7300ab2cf0ed8845"  # prompt v2 (Phase 6D-E4)
 SCHEMA_DIGEST = "95af33f4d10e4db13400bb3e97a7db9fe5e272e46ad91fcebb448eae44a48e9c"
 NOTHING = {"ai_runs": 0, "ai_run_results": 0, "ai_run_outputs": 0, "ai_artifacts": 0, "ai_artifact_excerpts": 0}
 
@@ -52,13 +52,13 @@ def test_a_possible_baec_language_success_persists_everything_exactly(world):
     spec = provider.invoked[0]
     assert (run.provider, run.task_type, run.task_version) == ("anthropic", "baec_extraction", "baec-extraction-task/v1")
     assert (run.prompt_version, run.input_version, run.output_schema_version) == (
-        "baec-extraction-prompt/v1", "baec-extraction-input/v1", "baec-extraction-output/v1")
+        "baec-extraction-prompt/v2", "baec-extraction-input/v1", "baec-extraction-output/v1")
     assert (run.request_spec_version, run.canonicalization_version) == ("baec-ai-request-spec/v1", "baec-canonical-json/v1")
     assert (run.requested_model, run.sdk_name, run.sdk_version) == (MODEL, "fake-sdk", "0.0.0-test")
-    assert run.prompt_digest == PROMPT_DIGEST == sha256_text(SYSTEM_PROMPT_V1)
+    assert run.prompt_digest == PROMPT_DIGEST == sha256_text(SYSTEM_PROMPT)
     assert run.input_digest == sha256_text(spec.messages[0]["content"])
     assert run.output_schema_digest == SCHEMA_DIGEST
-    assert run.request_digest == spec.digest() == "298bf6aac27bb69df99412d63c9586c79697d7342f5bb1a00dbabdb56b9c20a8"
+    assert run.request_digest == spec.digest() == "e142cb5c71c9b173931f04901cc18b1352d97ed78a3eba916c86850e5e71cdde"
     stored = store.get_result(result.ai_run_id)
     assert (stored.provider_message_id, stored.response_model, stored.stop_reason, stored.provider_request_id) == (
         "msg_fake_01", MODEL, "end_turn", "req_fake_01")
@@ -353,7 +353,7 @@ def test_instruction_like_source_text_is_only_data_in_an_unchanged_request(world
     world.run(injected, interaction_id="INT-X")
     world.run(neutral, interaction_id="INT-T")
     spec, baseline = injected.invoked[0].to_json_object(), neutral.invoked[0].to_json_object()
-    assert spec["system"] == baseline["system"] == SYSTEM_PROMPT_V1
+    assert spec["system"] == baseline["system"] == SYSTEM_PROMPT
     assert spec["output_config"] == baseline["output_config"]
     assert {k: v for k, v in spec.items() if k != "messages"} == {k: v for k, v in baseline.items() if k != "messages"}
     content = json.loads(spec["messages"][0]["content"])

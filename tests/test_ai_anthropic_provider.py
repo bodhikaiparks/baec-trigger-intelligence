@@ -14,7 +14,7 @@ import pytest
 from baec_app.ai import anthropic_provider
 from baec_app.ai.anthropic_provider import ANTHROPIC_TIMEOUT_SECONDS, AnthropicExtractionProvider, AnthropicSchemaDriftError
 from baec_app.ai.contracts import BaecExtractionOutput
-from baec_app.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT_V1
+from baec_app.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from baec_app.ai.provider import SENT_FIELDS, AiRequestSpec, ProviderApiError, ProviderTransportError
 from baec_app.ai.service import canonical_input
 from tests.ai_builders import THRESHOLD_TEXT, as_text, output
@@ -75,7 +75,7 @@ def provider_for(transport, max_retries=0, timeout=ANTHROPIC_TIMEOUT_SECONDS):
 
 def spec_for(provider):
     content = canonical_input(account_id="ACC-1", interaction_id="INT-T", interaction_text=THRESHOLD_TEXT)
-    return provider.prepare_request(model=MODEL, max_tokens=4096, system=SYSTEM_PROMPT_V1, user_content=content,
+    return provider.prepare_request(model=MODEL, max_tokens=4096, system=SYSTEM_PROMPT, user_content=content,
                                     prompt_version=PROMPT_VERSION, input_version="baec-extraction-input/v1",
                                     output_schema_version="baec-extraction-output/v1")
 

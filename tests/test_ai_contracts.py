@@ -9,7 +9,7 @@ import pytest
 from baec_app.ai import contracts
 from baec_app.ai.canonical import canonical_digest, sha256_text
 from baec_app.ai.contracts import BaecExtractionOutput, CriterionHypothesis, SourceExcerpt
-from baec_app.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT_V1
+from baec_app.ai.prompts import PROMPT_VERSION, PROMPT_VERSION_V1, SYSTEM_PROMPT_V1
 from tests.ai_builders import as_text, output
 
 PROMPT_V1_DIGEST = "b1782f1ce0afdd96eb335cece03912b9aa53c3a5ac3c71a2017f1cbe9ba5eadd"
@@ -18,7 +18,8 @@ OUTPUT_SCHEMA_V1_DIGEST = "95af33f4d10e4db13400bb3e97a7db9fe5e272e46ad91fcebb448
 
 def test_the_locked_v1_identifiers():
     assert (contracts.TASK_TYPE, contracts.TASK_VERSION) == ("baec_extraction", "baec-extraction-task/v1")
-    assert PROMPT_VERSION == "baec-extraction-prompt/v1"
+    # prompt v1 is the frozen historical identity; v2 is current since Phase 6D-E4
+    assert (PROMPT_VERSION_V1, PROMPT_VERSION) == ("baec-extraction-prompt/v1", "baec-extraction-prompt/v2")
     assert contracts.INPUT_VERSION == "baec-extraction-input/v1"
     assert contracts.OUTPUT_SCHEMA_VERSION == "baec-extraction-output/v1"
     assert contracts.REQUEST_SPEC_VERSION == "baec-ai-request-spec/v1"

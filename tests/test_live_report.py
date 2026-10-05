@@ -24,7 +24,7 @@ import pytest
 from baec_app.ai import validation
 from baec_app.ai.anthropic_provider import ANTHROPIC_TIMEOUT_SECONDS
 from baec_app.ai.canonical import canonical_json
-from baec_app.ai.prompts import SYSTEM_PROMPT_V1
+from baec_app.ai.prompts import SYSTEM_PROMPT
 from baec_app.ai.provenance import RunStatus
 from baec_app.ai.provider import ProviderApiError, ProviderTransportError
 from baec_app.ai.service import ExtractionService
@@ -348,7 +348,7 @@ def test_report_version_labels_equal_the_production_labels():
     assert report_module.TIMEOUT_SECONDS == ANTHROPIC_TIMEOUT_SECONDS == 180
     assert report_module.MAX_RETRIES == 0
     data = to_json_object(build(evaluate()))
-    assert data["versions"] == {"task": "baec-extraction-task/v1", "prompt": "baec-extraction-prompt/v1",
+    assert data["versions"] == {"task": "baec-extraction-task/v1", "prompt": "baec-extraction-prompt/v2",
                                 "input": "baec-extraction-input/v1", "output_schema": "baec-extraction-output/v1",
                                 "request_spec": "baec-ai-request-spec/v1", "canonicalization": "baec-canonical-json/v1",
                                 "validation": "baec-extraction-validation/v2"}
@@ -483,7 +483,7 @@ def test_no_canary_reaches_the_report_or_the_console(tmp_path):
     assert sum(o.artifact_present for o in run.evaluation.outcomes) >= 6
     written = (directory / run.report_file).read_text(encoding="utf-8")
     console = "\n".join(lines)
-    prompt_fragment = SYSTEM_PROMPT_V1.splitlines()[0][:60]
+    prompt_fragment = SYSTEM_PROMPT.splitlines()[0][:60]
     source_fragment = json.loads(CORPUS_PATH.read_text())["cases"][0]["interaction_text"].splitlines()[1]
     for text in (written, console):
         for canary in CANARIES + (prompt_fragment, source_fragment, "Traceback", "interaction_text",

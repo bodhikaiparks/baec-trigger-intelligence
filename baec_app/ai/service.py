@@ -36,7 +36,7 @@ from baec_app.ai.contracts import (
     TASK_VERSION,
     BaecExtractionOutput,
 )
-from baec_app.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT_V1
+from baec_app.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from baec_app.ai.provenance import (
     ArtifactExcerpt,
     ArtifactRecord,
@@ -127,7 +127,7 @@ class ExtractionService:
         user_content = canonical_input(account_id=account_id, interaction_id=interaction_id,
                                        interaction_text=interaction.text)
         spec = self._provider.prepare_request(
-            model=model, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT_V1, user_content=user_content,
+            model=model, max_tokens=MAX_TOKENS, system=SYSTEM_PROMPT, user_content=user_content,
             prompt_version=PROMPT_VERSION, input_version=INPUT_VERSION, output_schema_version=OUTPUT_SCHEMA_VERSION,
         )
         # 7. the prepared request must be exactly the v1 request
@@ -252,7 +252,7 @@ class ExtractionService:
             raise AiRequestError("the provider prepared something other than an AiRequestSpec")
         expected = {
             "request_spec_version": REQUEST_SPEC_VERSION, "provider": PROVIDER, "api_method": API_METHOD,
-            "model": model, "max_tokens": MAX_TOKENS, "system": SYSTEM_PROMPT_V1, "prompt_version": PROMPT_VERSION,
+            "model": model, "max_tokens": MAX_TOKENS, "system": SYSTEM_PROMPT, "prompt_version": PROMPT_VERSION,
             "input_version": INPUT_VERSION, "output_schema_version": OUTPUT_SCHEMA_VERSION,
             "messages": [{"role": "user", "content": user_content}],
         }
