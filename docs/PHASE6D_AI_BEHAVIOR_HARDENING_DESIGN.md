@@ -496,6 +496,13 @@ The new cases test system rules, not any particular observed model output. All i
 
 The guard's acceptance of every approved equivalence is **proven deterministically offline** (§14), using these interactions with synthetic model outputs through a fake provider. The live case only observes whether model and guard together produce an artifact. Under §4.4, a model that rewrites `$12,500` as `USD 12,500` is correctly rejected.
 
+> **Phase 6D-D clarification (amendment; label: Evaluation rule).** Two findings from the offline corpus-v2 implementation, before any live v2 execution:
+>
+> 1. **C16 normalization comparator deletion is independently hard-failing.** The table above detects a comparator dropped from an excerpt (`excerpt_fragment_requires`) and a LESS_THAN → AT_MOST rewrite (`normalization_forbids`), but a normalization that merely drops "less than" was caught only by production grounding. Corpus v2 adds the hard check `C16-H4` of the v2-only type `normalization_fragment_requires_any` (fragment `95`; allowed `less than 95`, `fewer than 95`, `below 95`, `under 95`, `<95`, `< 95`; critical `threshold_corruption`): every normalization that mentions the magnitude must carry a LESS_THAN expression. Like the other prohibitions it passes when no artifact exists. `C16-O1` stays observational.
+> 2. **CORE-NUMBERS literal-digit false positives.** The legacy literal-digit CORE-NUMBERS flags approved representation-only formatting (`$12,500` → `$12500`, `8.5%` → `8.50%`) as `threshold_corruption`. Corpus v2 therefore keeps the `CORE-NUMBERS` check identity but compares simple ASCII numeric literals (comma-grouped `d{1,3}(,ddd)+` or plain, with optional decimals) by exact decimal value, so `12,500` ≡ `12500`, `8.5` ≡ `8.50`, `05` ≡ `5`. It adds nothing else: no number words, scale suffixes or words, arithmetic, unit or currency conversion, comparator inference, or compounds, and it stays independent of the production implementation. Corpus v1 keeps its historical literal-digit CORE-NUMBERS unchanged.
+>
+> These are evaluation-methodology corrections, not BAEC research findings. Item 2 intentionally supersedes the statements in §7.2 and above that CORE-NUMBERS stays completely unchanged, for corpus v2 only.
+
 ## 12. Known limitations
 
 **Label: Known limitation.** Validation v2 does not claim to solve:

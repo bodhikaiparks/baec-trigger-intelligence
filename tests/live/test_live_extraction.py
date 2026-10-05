@@ -5,10 +5,12 @@ selected it skips unless the live gate is open (see tests/live/harness.py and
 docs/PHASE6C_LIVE_EVALUATION.md). Run one model per invocation, for example:
 
     BAEC_LIVE_CLAUDE=1 BAEC_LIVE_MODEL=claude-sonnet-5-5 BAEC_LIVE_REPORT_DIR=/absolute/ignored/or/external/dir \\
+        BAEC_LIVE_CORPUS=<an exact corpus version, chosen explicitly for the run> \\
         python -m pytest tests/live/test_live_extraction.py -m live_claude -s -p no:cacheprovider
 
 Since Phase 6D-C1 the gate also requires BAEC_LIVE_REPORT_DIR (tests/live/report.py), checked before any
-provider attempt, and the run writes one sanitized baec-live-evaluation-report/v1 file there.
+provider attempt, and the run writes one sanitized baec-live-evaluation-report/v2 file there. Since Phase 6D-D
+the corpus is selected explicitly by BAEC_LIVE_CORPUS; there is no default and no "latest".
 """
 
 import os

@@ -11,7 +11,8 @@ an identifier, a version label, a closed code, an exception class name, or a san
 model output, excerpts, prompts, digests of runs, paths, exception messages, and credentials cannot be
 represented. Aggregates are derived from the per-case structures, never maintained in parallel.
 
-Lifecycle (run_live): live gate, report-directory gate, a clean source tree, corpus and its SHA-256, serial cases
+Lifecycle (run_live): live gate, report-directory gate, a clean source tree, the explicitly selected
+corpus and its SHA-256, serial cases
 and per-case provenance, authority comparison, persisted audit, database closed and deleted, report built
 from the immutable evidence, written exclusively and atomically, verified, and only its file name and
 SHA-256 printed. A report failure is an operational failure of the run; it never preserves the database.
@@ -39,7 +40,7 @@ from tests.live.harness import (
     CASE_STATUSES,
     CHECK_CODES,
     CHECK_KINDS,
-    CORPUS_PATH,
+    CORPUS_PATHS,
     CRITICAL_CLASSES,
     OPERATIONALLY_INVALID_STATUSES,
     TERMINAL_FAILURE,
@@ -59,6 +60,7 @@ REPORT_VERSION = "baec-live-evaluation-report/v2"
 # service-returned status, so its audit could not be recomputed. Never written, never upgraded, never compared.
 RETIRED_REPORT_VERSIONS = ("baec-live-evaluation-report/v1",)
 REPORT_DIR_VARIABLE = "BAEC_LIVE_REPORT_DIR"
+CORPUS_VARIABLE = "BAEC_LIVE_CORPUS"  # the explicit corpus version of a live run; there is no default
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Duplicated from production with equality tests, so this layer never imports the validator or the SDK.
 VALIDATION_VERSION = "baec-extraction-validation/v2"
@@ -547,6 +549,14 @@ def source_metadata(*, repo_root: Path = REPO_ROOT, git: Git = run_git) -> Sourc
     return SourceMetadata(commit, status.stdout.strip() == "")
 
 
+def live_corpus_version(environ: Mapping[str, str]) -> str:
+    """The corpus version named explicitly by BAEC_LIVE_CORPUS, or LiveGateClosed. Never inferred or "latest"."""
+    version = environ.get(CORPUS_VARIABLE)
+    if version not in CORPUS_PATHS:
+        raise LiveGateClosed(f"no corpus selected: set {CORPUS_VARIABLE} to an exact corpus version")
+    return version
+
+
 # --- the live lifecycle ---------------------------------------------------------------------------------
 
 
@@ -562,7 +572,7 @@ def _now() -> datetime:
 
 
 def run_live(environ: Mapping[str, str], *, provider=None, emit: Callable[[str], None] = print, clock=None,
-             now: Callable[[], datetime] = _now, corpus_path: Path = CORPUS_PATH, repo_root: Path = REPO_ROOT,
+             now: Callable[[], datetime] = _now, corpus_path: Path | None = None, repo_root: Path = REPO_ROOT,
              git: Git = run_git) -> LiveRun:
     """The whole live run. Every gate, including a clean source tree, is checked before any database,
     runtime, or provider exists.
@@ -574,8 +584,11 @@ def run_live(environ: Mapping[str, str], *, provider=None, emit: Callable[[str],
     source = source_metadata(repo_root=repo_root, git=git)
     if not source.working_tree_clean:  # a dirty-tree report would fail the comparability precondition (6D-C2)
         raise LiveGateClosed("the source working tree is not clean: commit or remove changes before a live run")
-    data = Path(corpus_path).read_bytes()
+    version = live_corpus_version(environ)
+    data = Path(CORPUS_PATHS[version] if corpus_path is None else corpus_path).read_bytes()
     corpus = validate_corpus(json.loads(data))
+    if corpus.corpus_version != version:
+        raise LiveGateClosed(f"the corpus does not declare the version selected by {CORPUS_VARIABLE}")
     corpus_sha256 = hashlib.sha256(data).hexdigest()  # of the exact bytes this run used
     evaluation = run_evaluation(corpus, model=model, provider=provider, emit=emit, clock=clock)  # DB deleted
     try:

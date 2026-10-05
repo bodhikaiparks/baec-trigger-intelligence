@@ -103,7 +103,8 @@ def fake_git(commit=COMMIT, clean=True, ignored=False):
 
 
 def live_env(directory, **changes):
-    return dict(OPEN_ENV, **{REPORT_DIR_VARIABLE: str(directory)}, **changes)
+    """An open live environment with a report directory and an explicit corpus selection (v1, the C1 fixtures)."""
+    return {**OPEN_ENV, REPORT_DIR_VARIABLE: str(directory), "BAEC_LIVE_CORPUS": CORPUS_VERSION, **changes}
 
 
 class CountingProvider:
@@ -145,7 +146,11 @@ def v2_corpus():
 
 def test_core_terminal_success_is_not_applied_to_corpus_v1():
     assert core_checks(CORPUS_VERSION) == CORE_CHECKS and CORE_TERMINAL_SUCCESS not in CORE_CHECKS
-    assert core_checks(CORPUS_VERSION_V2) == CORE_CHECKS + (CORE_TERMINAL_SUCCESS,)
+    # v2 core: the same check IDs plus CORE-TERMINAL-SUCCESS; its CORE-NUMBERS compares literals by value (6D-D)
+    v2_core = core_checks(CORPUS_VERSION_V2)
+    assert [c["check_id"] for c in v2_core] == [c["check_id"] for c in CORE_CHECKS] + ["CORE-TERMINAL-SUCCESS"]
+    assert v2_core[:2] == CORE_CHECKS[:2] and v2_core[3] == CORE_TERMINAL_SUCCESS
+    assert v2_core[2]["type"] == "normalization_numbers_from_source_by_value" != CORE_CHECKS[2]["type"]
     evaluation = evaluate()
     assert all("CORE-TERMINAL-SUCCESS" not in {c.check_id for c in o.checks} for o in evaluation.outcomes)
     # the Phase 6C v1 totals stay historical: three core checks per case plus every explicit hard check

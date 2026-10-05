@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal
 import shutil
 import tempfile
 import time
@@ -61,6 +62,9 @@ from baec_app.domain.models import Account
 
 CORPUS_VERSION = "baec-extraction-live-corpus/v1"
 CORPUS_PATH = Path(__file__).resolve().parent / "data" / "baec_extraction_live_v1.json"
+# Corpus v2 (Phase 6D-D, design §11). v1 stays byte-for-byte unchanged as Phase 6C evidence. A corpus is always
+# selected explicitly by version: there is no "latest".
+CORPUS_PATH_V2 = Path(__file__).resolve().parent / "data" / "baec_extraction_live_v2.json"
 COMPARISON_MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
 LIVE_FLAG = "BAEC_LIVE_CLAUDE"
 MODEL_VARIABLE = "BAEC_LIVE_MODEL"
@@ -86,6 +90,8 @@ CHECK_TYPES = {
     "normalization_forbids": ("phrases",),
     "normalization_contains_any": ("phrases",),
     "supporting_excerpts_exclude": ("fragments",),
+    "free_text_forbids_numeric_content": (),  # corpus v2 only
+    "normalization_fragment_requires_any": ("fragment", "allowed"),  # corpus v2 only
 }
 # Checks that need an artifact fail without one; prohibitions pass vacuously when nothing was claimed.
 REQUIRES_ARTIFACT = {"terminal_success", "analysis_status_in", "criterion_status_in", "excerpt_contains",
@@ -104,7 +110,25 @@ CORPUS_VERSION_V2 = "baec-extraction-live-corpus/v2"  # a prospective label; no 
 TERMINAL_FAILURE = "terminal_failure"
 CORE_TERMINAL_SUCCESS = {"check_id": "CORE-TERMINAL-SUCCESS", "type": "core_terminal_success", "kind": "hard",
                          "critical": TERMINAL_FAILURE}
-CORE_CHECKS_BY_CORPUS = {CORPUS_VERSION: CORE_CHECKS, CORPUS_VERSION_V2: CORE_CHECKS + (CORE_TERMINAL_SUCCESS,)}
+# Corpus v2 keeps the CORE-NUMBERS identity but compares simple ASCII numeric literals by decimal value, so approved
+# grouping and insignificant-zero formatting is not corruption (Phase 6D-D clarification). v1 keeps literal digits.
+CORE_NUMBERS_V2 = {"check_id": "CORE-NUMBERS", "type": "normalization_numbers_from_source_by_value", "kind": "hard",
+                   "critical": "threshold_corruption"}
+CORE_CHECKS_V2 = (CORE_CHECKS[0], CORE_CHECKS[1], CORE_NUMBERS_V2, CORE_TERMINAL_SUCCESS)
+CORE_CHECKS_BY_CORPUS = {CORPUS_VERSION: CORE_CHECKS, CORPUS_VERSION_V2: CORE_CHECKS_V2}
+CORPUS_PATHS = {CORPUS_VERSION: CORPUS_PATH, CORPUS_VERSION_V2: CORPUS_PATH_V2}
+# Per-version corpus rules (design §7.1, §11). v2 retires case-level terminal_success and clear_case_parse_failure
+# (CORE-TERMINAL-SUCCESS replaces them) and adds free_text_forbids_numeric_content; v1 rules are unchanged.
+CORPUS_CHECK_TYPES = {
+    CORPUS_VERSION: tuple(t for t in CHECK_TYPES
+                          if t not in ("free_text_forbids_numeric_content", "normalization_fragment_requires_any")),
+    CORPUS_VERSION_V2: tuple(t for t in CHECK_TYPES if t != "terminal_success"),
+}
+CORPUS_CRITICAL_CLASSES = {
+    CORPUS_VERSION: CRITICAL_CLASSES,
+    CORPUS_VERSION_V2: tuple(c for c in CRITICAL_CLASSES if c != "clear_case_parse_failure"),
+}
+CORPUS_V2_CASE_IDS = tuple(f"C{n:02d}" for n in range(1, 18))
 BEHAVIORAL_TERMINAL_FAILURES = ("refusal", "max_tokens", "unexpected_stop", "parse_failure",
                                 "semantic_validation_failure")
 FABRICATION_CODES = {"excerpt_not_verbatim", "excerpt_blank", "source_interaction_mismatch"}
@@ -132,7 +156,8 @@ CHECK_CODES = ("ok", "provenance_incomplete", "fabricated_or_non_verbatim_eviden
                "criterion_status_outside_allowed", "criterion_supported", "expected_excerpt_missing",
                "excerpt_drops_required_qualifier", "speaker_attribution_forbidden", "speaker_attribution_outside_allowed",
                "normalization_contains_forbidden_phrase", "normalization_missing_expected_phrase",
-               "injected_text_used_as_support", "artifact_unverified") + tuple(f"status_{s}" for s in CASE_STATUSES)
+               "injected_text_used_as_support", "artifact_unverified", "numeric_content_in_free_text",
+               "normalization_drops_required_comparator") + tuple(f"status_{s}" for s in CASE_STATUSES)
 
 
 def core_checks(corpus_version: str) -> tuple[dict, ...]:
@@ -194,7 +219,8 @@ def _require(condition: bool, message: str) -> None:
 def validate_corpus(data: object) -> Corpus:
     """Validate the whole corpus deterministically. Nothing is executed or stored."""
     _require(type(data) is dict, "the corpus must be a JSON object")
-    _require(data.get("corpus_version") == CORPUS_VERSION, "unexpected corpus version")
+    version = data.get("corpus_version")
+    _require(version in CORPUS_PATHS, "unexpected corpus version")
     raw_cases = data.get("cases")
     _require(type(raw_cases) is list and 0 < len(raw_cases) <= MAX_CASES, f"the corpus must have 1-{MAX_CASES} cases")
     _require(not _FORBIDDEN_TEXT.search(str(data.get("description", ""))), "the corpus description contains forbidden text")
@@ -219,26 +245,28 @@ def validate_corpus(data: object) -> Corpus:
         checks = raw.get("checks")
         _require(type(checks) is list and bool(checks), f"{case_id}: checks are required")
         for check in checks:
-            _validate_check(case_id, check, seen_checks)
+            _validate_check(case_id, check, seen_checks, version)
         allowed = {"case_id", "account_id", "interaction_id", "interaction_text", "criticality", "checks", "purpose"}
         _require(set(raw) <= allowed, f"{case_id}: unknown fields")
         seen_cases.add(case_id)
         seen_accounts.add(account_id)
         seen_interactions.add(interaction_id)
         cases.append(LiveCase(case_id, account_id, interaction_id, text, raw["criticality"], tuple(checks)))
-    return Corpus(CORPUS_VERSION, tuple(cases))
+    if version == CORPUS_VERSION_V2:
+        _require(tuple(c.case_id for c in cases) == CORPUS_V2_CASE_IDS, "corpus v2 must hold exactly C01-C17, in order")
+    return Corpus(version, tuple(cases))
 
 
-def _validate_check(case_id: str, check: object, seen: set) -> None:
+def _validate_check(case_id: str, check: object, seen: set, version: str) -> None:
     _require(type(check) is dict, f"{case_id}: every check must be an object")
     check_id, check_type = check.get("check_id"), check.get("type")
     _require(type(check_id) is str and check_id.startswith(f"{case_id}-") and check_id not in seen,
              f"{case_id}: check ids must be unique and prefixed with the case id")
     seen.add(check_id)
-    _require(check_type in CHECK_TYPES, f"{check_id}: unknown check type")
+    _require(check_type in CORPUS_CHECK_TYPES[version], f"{check_id}: check type not allowed in this corpus version")
     _require(check.get("kind") in CHECK_KINDS, f"{check_id}: unknown check kind")
     critical = check.get("critical")
-    _require(critical is None or (critical in CRITICAL_CLASSES and check["kind"] == "hard"),
+    _require(critical is None or (critical in CORPUS_CRITICAL_CLASSES[version] and check["kind"] == "hard"),
              f"{check_id}: only hard checks may carry a known critical class")
     parameters = set(check) - {"check_id", "type", "kind", "critical"}
     _require(parameters == set(CHECK_TYPES[check_type]), f"{check_id}: parameters must be exactly {CHECK_TYPES[check_type]}")
@@ -248,6 +276,16 @@ def _validate_check(case_id: str, check: object, seen: set) -> None:
 
 def load_corpus(path: Path = CORPUS_PATH) -> Corpus:
     return validate_corpus(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def load_corpus_version(version: str) -> Corpus:
+    """The corpus of exactly this version, from its own file. Never a newer or older one."""
+    if version not in CORPUS_PATHS:
+        raise CorpusError("unknown corpus version")
+    corpus = load_corpus(CORPUS_PATHS[version])
+    if corpus.corpus_version != version:
+        raise CorpusError("the corpus file declares another version")
+    return corpus
 
 
 # --- 3-4. a fresh database and the authority snapshot ---------------------------------------------
@@ -294,6 +332,37 @@ class CheckResult:
     code: str  # a machine reason, never source or model text
 
 
+# free_text_forbids_numeric_content (design §11): a separate, simpler implementation than the production grounding
+# tokenizer, which the harness never imports. A digit, or a whole word of the closed number grammar, is numeric.
+NUMBER_GRAMMAR_WORDS = frozenset((
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+    "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty",
+    "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand",
+))
+_WORD = re.compile(r"[A-Za-z]+")
+
+
+# CORE-NUMBERS for corpus v2: a simple ASCII literal, comma-grouped (d{1,3}(,ddd)+) or plain, with optional decimals,
+# compared by exact decimal value (12,500 == 12500, 8.5 == 8.50, 05 == 5). Nothing else: no number words, scale,
+# arithmetic, units, currency, comparators, or compounds. Independent of the production grounding implementation.
+_LITERAL = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d)|\d+(?:\.\d+)?")
+
+
+def _literal_values(text: str) -> set[Decimal]:
+    return {Decimal(literal.replace(",", "")) for literal in _LITERAL.findall(text)}
+
+
+def _has_numeric_content(text: str) -> bool:
+    return any(character.isdigit() for character in text) or any(
+        word.lower() in NUMBER_GRAMMAR_WORDS for word in _WORD.findall(text))
+
+
+def _free_text(output: BaecExtractionOutput) -> list[str]:
+    """Every model-authored free-text field: both normalizations, every explanation, every uncertainty."""
+    return (_normalizations(output) + [h.explanation for h in output.criterion_hypotheses]
+            + list(output.uncertainties))
+
+
 def _normalizations(output: BaecExtractionOutput) -> list[str]:
     return [text for text in (output.normalized_condition, output.normalized_evaluation_link) if text is not None]
 
@@ -327,6 +396,10 @@ def evaluate_check(check: dict, *, result, output: BaecExtractionOutput | None, 
         return outcome(check_type not in REQUIRES_ARTIFACT, "no_artifact")
     hypotheses = {h.criterion: h for h in output.criterion_hypotheses}
     excerpts = output.source_excerpts
+    if check_type == "normalization_numbers_from_source_by_value":
+        source_values = _literal_values(source_text)
+        invented = [v for text in _normalizations(output) for v in _literal_values(text) if v not in source_values]
+        return outcome(not invented, "number_not_in_source")
     if check_type == "normalization_numbers_from_source":
         source_numbers = set(_NUMBER.findall(source_text))
         invented = [n for text in _normalizations(output) for n in _NUMBER.findall(text) if n not in source_numbers]
@@ -363,6 +436,12 @@ def evaluate_check(check: dict, *, result, output: BaecExtractionOutput | None, 
         lowered = [text.lower() for text in _normalizations(output)]
         return outcome(any(p.lower() in text for p in check["phrases"] for text in lowered),
                        "normalization_missing_expected_phrase")
+    if check_type == "normalization_fragment_requires_any":
+        lowered = [text.lower() for text in _normalizations(output)]
+        return outcome(all(any(p.lower() in text for p in check["allowed"]) for text in lowered
+                           if check["fragment"].lower() in text), "normalization_drops_required_comparator")
+    if check_type == "free_text_forbids_numeric_content":
+        return outcome(not any(_has_numeric_content(text) for text in _free_text(output)), "numeric_content_in_free_text")
     if check_type == "supporting_excerpts_exclude":
         supporting = {ref for h in output.criterion_hypotheses if h.status == "supported" for ref in h.excerpt_refs}
         used = [e.text for e in excerpts if e.excerpt_id in supporting]
