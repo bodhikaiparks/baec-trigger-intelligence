@@ -98,6 +98,7 @@ class _DataLayerProvenanceStore:
             canonicalization_version=run.canonicalization_version,
             request_spec_version=run.request_spec_version,
             request_digest=run.request_digest,
+            validation_version=run.validation_version,
             requested_at=run.requested_at,
         ))
 

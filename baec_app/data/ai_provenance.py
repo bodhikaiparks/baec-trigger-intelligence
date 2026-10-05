@@ -1,4 +1,4 @@
-"""Stores and reloads Phase 6 AI provenance (schema version 5).
+"""Stores and reloads Phase 6 AI provenance (schema version 6).
 
 Concrete persistence for docs/PHASE6_STRUCTURED_CLAUDE_PROVENANCE_DESIGN.md §10.
 It records AI runs, each run's single terminal result, the raw returned model
@@ -16,11 +16,13 @@ Rules this module follows:
 * record_run commits on its own before returning, so a run is durable before
   any remote attempt. Everything belonging to one terminal outcome is
   committed by record_terminal_outcome in a single transaction, or not at all.
-* Every load re-verifies digests, bindings, and excerpt fidelity, and raises
-  PersistenceIntegrityError rather than returning anything corrupt.
+* Every load re-verifies digests, bindings, excerpt fidelity, and failure codes,
+  and raises PersistenceIntegrityError rather than returning anything corrupt.
+* Failure codes are a closed, status-specific vocabulary (Phase 6D design §5.1).
+  A semantic code is legal only under the validator version its run recorded.
 * The store never reads the clock; timestamps are supplied by callers.
 * open_ai_provenance_store(path) is the only opener: it opens an existing
-  schema-v5 file with foreign keys enforced, never creates one, and returns a
+  schema-v6 file with foreign keys enforced, never creates one, and returns a
   store that owns (and closes) its connection. A store built directly from a
   connection does not own it.
 """
@@ -43,7 +45,10 @@ from baec_app.data.database import (
     AI_API_ERROR_CATEGORIES,
     AI_OUTPUT_REQUIRED_STATUSES,
     AI_OUTPUT_STATUSES,
+    AI_PARSE_FAILURE_CODES,
     AI_RESPONSE_STATUSES,
+    AI_SEMANTIC_FAILURE_CODES,
+    AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION,
     AI_TRANSPORT_CATEGORIES,
     PersistenceError,
     PersistenceIntegrityError,
@@ -91,8 +96,6 @@ class AiRemoteOutcome(Enum):
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _CATEGORY = re.compile(r"[a-z][a-z0-9_]*")
-_CODE = re.compile(r"[a-z][a-z0-9_]*(:[A-Za-z0-9._:-]+)?")
-_MAX_CODE_LENGTH = 200
 
 
 def sha256_text(text: str) -> str:
@@ -120,6 +123,26 @@ def _digest(value: object, field: str) -> None:
 def _aware(value: object, field: str) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise RecordValidationError(f"{field} must be a timezone-aware datetime")
+
+
+def _encode_failure_codes(codes: tuple[str, ...]) -> str | None:
+    """The one stored spelling of failure codes: NULL for none, else a compact JSON array."""
+    return json.dumps(list(codes), separators=(",", ":")) if codes else None
+
+
+def _decode_failure_codes(stored: object) -> tuple[str, ...]:
+    """Read stored failure codes back, refusing anything but the exact stored spelling."""
+    if stored is None:
+        return ()
+    if not isinstance(stored, str):
+        raise ValueError("stored failure codes are not text")
+    codes = json.loads(stored)
+    if type(codes) is not list or not codes or any(type(code) is not str for code in codes):
+        raise ValueError("stored failure codes are not a non-empty JSON array of text")
+    codes = tuple(codes)
+    if _encode_failure_codes(codes) != stored:
+        raise ValueError("stored failure codes are not in their canonical spelling")
+    return codes
 
 
 def _count(value: object, field: str) -> None:
@@ -152,6 +175,7 @@ class AiRunRecord:
     canonicalization_version: str
     request_spec_version: str
     request_digest: str
+    validation_version: str
     requested_at: datetime
     retry_of_ai_run_id: str | None = None
 
@@ -159,7 +183,7 @@ class AiRunRecord:
         for field in (
             "ai_run_id", "task_type", "task_version", "account_id", "interaction_id", "requested_model",
             "sdk_name", "sdk_version", "prompt_version", "input_version", "output_schema_version",
-            "canonicalization_version", "request_spec_version",
+            "canonicalization_version", "request_spec_version", "validation_version",
         ):
             _text(getattr(self, field), f"AiRunRecord.{field}")
         if self.provider != "anthropic":
@@ -204,11 +228,6 @@ class AiRunResultRecord:
             _count(getattr(self, field), f"AiRunResultRecord.{field}")
         if self.output_digest is not None:
             _digest(self.output_digest, "AiRunResultRecord.output_digest")
-        if type(self.failure_codes) is not tuple:
-            raise RecordValidationError("failure_codes must be a tuple of machine codes")
-        for code in self.failure_codes:
-            if not isinstance(code, str) or len(code) > _MAX_CODE_LENGTH or not _CODE.fullmatch(code):
-                raise RecordValidationError("failure codes must be machine tokens, never free text")
         if self.failure_category is not None and (
             not isinstance(self.failure_category, str) or not _CATEGORY.fullmatch(self.failure_category)
         ):
@@ -252,10 +271,34 @@ class AiRunResultRecord:
                 raise RecordValidationError("transport_failure requires the category matching its delivery state")
         elif self.failure_category is not None:
             raise RecordValidationError(f"{status} has no failure category")
-        if self.failure_codes and status not in ("parse_failure", "semantic_validation_failure"):
-            raise RecordValidationError(f"{status} has no failure codes")
-        if status == "semantic_validation_failure" and not self.failure_codes:
+        _check_failure_codes(status, self.failure_codes)
+
+
+def _check_failure_codes(status: str, codes: tuple[str, ...], validation_version: str | None = None) -> None:
+    """The closed, status-specific failure-code vocabulary and cardinality (Phase 6D design §5.1).
+
+    Without a validator version, a semantic code must be legal under some known
+    version (record construction). With one, it must be legal under that version:
+    the store checks every result against the version its own run recorded.
+    """
+    if type(codes) is not tuple or any(type(code) is not str for code in codes):
+        raise RecordValidationError("failure_codes must be a tuple of machine codes")
+    if status == "parse_failure":
+        if len(codes) != 1 or codes[0] not in AI_PARSE_FAILURE_CODES:
+            raise RecordValidationError("parse_failure requires exactly one parse failure code")
+    elif status == "semantic_validation_failure":
+        if not codes:
             raise RecordValidationError("semantic_validation_failure requires its failure codes")
+        if validation_version is None:
+            legal = AI_SEMANTIC_FAILURE_CODES
+        else:
+            legal = AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION.get(validation_version, ())
+        if any(code not in legal for code in codes):
+            raise RecordValidationError("a failure code is outside the validator version's closed vocabulary")
+        if list(codes) != sorted(set(codes)):
+            raise RecordValidationError("failure codes must be sorted and unique")
+    elif codes:
+        raise RecordValidationError(f"{status} has no failure codes")
 
 
 @dataclass(frozen=True)
@@ -395,7 +438,7 @@ _RUN_COLUMNS = (
     "ai_run_id", "provider", "task_type", "task_version", "account_id", "interaction_id", "requested_model",
     "sdk_name", "sdk_version", "prompt_version", "prompt_digest", "input_version", "input_digest",
     "output_schema_version", "output_schema_digest", "canonicalization_version", "request_spec_version",
-    "request_digest", "requested_at", "retry_of_ai_run_id",
+    "request_digest", "validation_version", "requested_at", "retry_of_ai_run_id",
 )
 _RESULT_COLUMNS = (
     "ai_run_id", "status", "remote_outcome", "provider_message_id", "response_model", "stop_reason",
@@ -430,7 +473,7 @@ class AiProvenanceStoreUnavailable(PersistenceError):
 
 
 def open_ai_provenance_store(path: str | os.PathLike[str]) -> AiProvenanceStore:
-    """Open an existing schema-v5 database for AI provenance writes, never creating one.
+    """Open an existing schema-v6 database for AI provenance writes, never creating one.
 
     Accepts a str or an os.PathLike[str]. Refuses blank paths, ":memory:", file: URIs,
     missing files, directories, and non-databases; DatabaseVersionError propagates for
@@ -537,6 +580,10 @@ class AiProvenanceStore:
                 raise RepositoryVerificationError("success requires the response model to equal the requested model")
             if result.status is AiRunStatus.MODEL_MISMATCH and result.response_model == run.requested_model:
                 raise RepositoryVerificationError("model_mismatch requires a response model that differs")
+            try:
+                _check_failure_codes(result.status.value, result.failure_codes, run.validation_version)
+            except RecordValidationError as error:
+                raise RepositoryVerificationError(str(error)) from error
             if outcome.artifact is not None:
                 self._verify_artifact_against_run(outcome.artifact, run)
                 self._require_after_request(run, outcome.artifact.created_at, "created_at")
@@ -576,9 +623,7 @@ class AiProvenanceStore:
         values = [getattr(result, column) for column in _RESULT_COLUMNS]
         values[_RESULT_COLUMNS.index("status")] = result.status.value
         values[_RESULT_COLUMNS.index("remote_outcome")] = result.remote_outcome.value
-        values[_RESULT_COLUMNS.index("failure_codes")] = (
-            json.dumps(list(result.failure_codes), separators=(",", ":")) if result.failure_codes else None
-        )
+        values[_RESULT_COLUMNS.index("failure_codes")] = _encode_failure_codes(result.failure_codes)
         values[_RESULT_COLUMNS.index("completed_at")] = encode_datetime(result.completed_at)
         self._db.execute(_insert("ai_run_results", _RESULT_COLUMNS), values)
 
@@ -629,9 +674,9 @@ class AiProvenanceStore:
             values["status"] = AiRunStatus(values["status"])
             values["remote_outcome"] = AiRemoteOutcome(values["remote_outcome"])
             values["completed_at"] = decode_datetime(values["completed_at"])
-            codes = values["failure_codes"]
-            values["failure_codes"] = () if codes is None else tuple(json.loads(codes))
+            values["failure_codes"] = _decode_failure_codes(values["failure_codes"])
             result = AiRunResultRecord(**values)
+            _check_failure_codes(result.status.value, result.failure_codes, run.validation_version)
             if result.completed_at < run.requested_at:
                 raise ValueError("the result completed before its run was requested")
             if result.status is AiRunStatus.SUCCESS and result.response_model != run.requested_model:

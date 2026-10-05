@@ -128,7 +128,7 @@ class Ids:
 
 @pytest.fixture
 def world(tmp_path):
-    """A schema-v5 synthetic database with three ACC-1 interactions and one ACC-2 interaction."""
+    """A schema-v6 synthetic database with three ACC-1 interactions and one ACC-2 interaction."""
     path = str(tmp_path / "ai.sqlite3")
     connection = open_database(path)
     repository = Repository(connection)

@@ -12,6 +12,17 @@ from datetime import datetime
 from enum import Enum
 from typing import Protocol
 
+from baec_app.ai.validation import SEMANTIC_FAILURE_CODES
+
+# The service's parse-failure codes: exactly one per parse_failure (Phase 6D design §5.1).
+PARSE_FAILURE_CODES = (
+    "missing_stop_reason",
+    "missing_text_block",
+    "multiple_text_blocks",
+    "invalid_json",
+    "structured_output_validation_failed",
+)
+
 
 class RunStatus(Enum):
     """Terminal statuses the service records. interrupted is an operator action in the data layer only."""
@@ -60,9 +71,12 @@ class RunRecord:
     canonicalization_version: str
     request_spec_version: str
     request_digest: str
+    validation_version: str
     requested_at: datetime
 
     def __post_init__(self) -> None:
+        if type(self.validation_version) is not str or not self.validation_version.strip():
+            raise ValueError("RunRecord.validation_version must be a non-blank string")
         _aware(self.requested_at, "RunRecord.requested_at")
 
 
@@ -91,6 +105,17 @@ class TerminalResult:
         _aware(self.completed_at, "TerminalResult.completed_at")
         if type(self.failure_codes) is not tuple:
             raise ValueError("failure_codes must be a tuple")
+        codes = self.failure_codes
+        if self.status is RunStatus.PARSE_FAILURE:
+            if len(codes) != 1 or codes[0] not in PARSE_FAILURE_CODES:
+                raise ValueError("parse_failure requires exactly one parse failure code")
+        elif self.status is RunStatus.SEMANTIC_VALIDATION_FAILURE:
+            if not codes or any(code not in SEMANTIC_FAILURE_CODES for code in codes):
+                raise ValueError("semantic_validation_failure requires one or more semantic failure codes")
+            if list(codes) != sorted(set(codes)):
+                raise ValueError("failure codes must be sorted and unique")
+        elif codes:
+            raise ValueError(f"{self.status.value} has no failure codes")
 
 
 @dataclass(frozen=True)

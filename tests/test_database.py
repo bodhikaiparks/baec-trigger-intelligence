@@ -32,14 +32,18 @@ AI_TRIGGERS = (
     + [f"{table}_no_replace" for table in AI_REPLACE_GUARDED_KEYS]
     + ["ai_run_results_model_binding", "ai_run_outputs_require_result",
        "ai_artifacts_require_success", "ai_artifact_excerpts_verbatim"]
+    # Schema version 6 (Phase 6D-B1): the closed failure-code backstop.
+    + ["ai_run_results_failure_codes_closed"]
 )
 
 
 def test_sqlite_version_check_refuses_versions_without_strict_tables():
-    for too_old in ((3, 36, 0), (3, 31, 1), (2, 8, 17)):
+    """Since Phase 6D-B1 the minimum is 3.38.0, for built-in JSON functions; 3.37.x is refused too."""
+    assert database.MINIMUM_SQLITE_VERSION == (3, 38, 0)
+    for too_old in ((3, 37, 2), (3, 37, 0), (3, 36, 0), (3, 31, 1), (2, 8, 17)):
         with pytest.raises(DatabaseVersionError):
             database.check_sqlite_version(too_old)
-    database.check_sqlite_version((3, 37, 0))
+    database.check_sqlite_version((3, 38, 0))
     database.check_sqlite_version((3, 50, 4))
     database.check_sqlite_version()  # the running SQLite must itself be new enough
 
@@ -134,7 +138,7 @@ def test_strict_tables_refuse_a_value_of_the_wrong_storage_type(connection):
 
 
 def test_schema_version_is_set_and_a_mismatch_is_refused(connection):
-    assert schema_version(connection) == database.SCHEMA_VERSION == 5
+    assert schema_version(connection) == database.SCHEMA_VERSION == 6
     require_current_schema(connection)
     connection.execute("PRAGMA user_version = 99")
     with pytest.raises(DatabaseVersionError):
@@ -216,13 +220,13 @@ def test_working_copy_is_complete_independent_and_writable(connection):
     make_read_only(connection)
     copy = create_working_copy(connection)
     try:
-        assert schema_version(copy) == 5
+        assert schema_version(copy) == 6
         assert copy.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         copy.execute("INSERT INTO accounts (account_id, name) VALUES ('B', 'Synthetic')")
         assert copy.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
         triggers = copy.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'").fetchone()[0]
-        assert triggers == 34 + len(AI_TRIGGERS) == 53
+        assert triggers == 34 + len(AI_TRIGGERS) == 54
     finally:
         copy.close()
 

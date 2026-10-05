@@ -54,16 +54,8 @@ from baec_app.ai.provider import (
     ProviderResponse,
     ProviderTransportError,
 )
-from baec_app.ai.validation import validate_extraction
+from baec_app.ai.validation import VALIDATION_VERSION, validate_extraction
 from baec_app.application import Clock, ReadService
-
-PARSE_FAILURE_CODES = (
-    "missing_stop_reason",
-    "missing_text_block",
-    "multiple_text_blocks",
-    "invalid_json",
-    "structured_output_validation_failed",
-)
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}")
@@ -160,6 +152,7 @@ class ExtractionService:
             canonicalization_version=CANONICALIZATION_VERSION,
             request_spec_version=spec.request_spec_version,
             request_digest=spec.digest(),
+            validation_version=VALIDATION_VERSION,
             requested_at=self._clock.now(),
         )
         # 10. durable before the attempt

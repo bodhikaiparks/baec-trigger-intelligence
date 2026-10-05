@@ -49,6 +49,8 @@ EXPECTED_TRIGGERS = sorted(
     + [f"{table}_no_replace" for table in AI_REPLACE_GUARDED_KEYS]
     + ["ai_run_results_model_binding", "ai_run_outputs_require_result",
        "ai_artifacts_require_success", "ai_artifact_excerpts_verbatim"]
+    # Schema version 6 (Phase 6D-B1): the closed failure-code backstop.
+    + ["ai_run_results_failure_codes_closed"]
 )
 
 
@@ -276,7 +278,7 @@ def test_rc33_guards_are_present_in_working_copies_and_the_canonical_seed():
         try:
             assert _trigger_names(canonical) == EXPECTED_TRIGGERS
             assert _trigger_names(working) == EXPECTED_TRIGGERS
-            assert len(EXPECTED_TRIGGERS) == 34 + 19
+            assert len(EXPECTED_TRIGGERS) == 34 + 19 + 1
             row = working.execute("SELECT * FROM interactions ORDER BY rowid").fetchone()
             refused(
                 working,

@@ -17,6 +17,11 @@ MAX_EXCERPT_REFS = 20
 MAX_UNCERTAINTIES = 10
 MAX_TEXT_LENGTH = 500  # Unicode code points
 
+# The rules in this module, recorded on every run before the provider attempt
+# (Phase 6D design §6). Prospective from Phase 6D-B1: Phase 6C runs used the same
+# rules as a legacy, pre-versioned validator, and no identifier labels them.
+VALIDATION_VERSION = "baec-extraction-validation/v1"
+
 SEMANTIC_FAILURE_CODES = (
     "excerpt_id_blank",
     "source_interaction_mismatch",

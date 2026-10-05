@@ -1,4 +1,4 @@
-"""Phase 6B: schema version 5 and the five AI provenance tables, checked at the SQLite level."""
+"""Phase 6B: the five AI provenance tables, checked at the SQLite level (schema version 6 since Phase 6D-B1)."""
 
 import ast
 import hashlib
@@ -46,9 +46,10 @@ def _tables(connection):
 
 
 def test_a_new_database_is_schema_version_5_with_exactly_the_previous_tables_plus_five():
+    """Schema version 6 since Phase 6D-B1 (name kept for ID continuity); no table was added."""
     connection = open_database()
     try:
-        assert SCHEMA_VERSION == schema_version(connection) == 5
+        assert SCHEMA_VERSION == schema_version(connection) == 6
         assert AI_PROVENANCE_TABLES == AI_TABLES
         assert _tables(connection) == set(PHASE3_TABLES) | set(AI_TABLES) == set(ALL_TABLES)
         strict = {row[1]: row[5] for row in connection.execute("PRAGMA table_list") if row[1] in AI_TABLES}
@@ -90,7 +91,7 @@ def test_the_store_refuses_a_connection_at_another_schema_version_or_without_for
         connection.execute("PRAGMA user_version = 4")
         with pytest.raises(DatabaseVersionError):
             AiProvenanceStore(connection)
-        connection.execute("PRAGMA user_version = 5")
+        connection.execute("PRAGMA user_version = 6")
         connection.execute("PRAGMA foreign_keys = OFF")
         with pytest.raises(ai_provenance.PersistenceError):
             AiProvenanceStore(connection)
@@ -101,10 +102,11 @@ def test_the_store_refuses_a_connection_at_another_schema_version_or_without_for
 
 
 def test_the_canonical_seed_is_schema_v5_with_empty_ai_tables_and_unchanged_demo_data():
+    """Schema version 6 since Phase 6D-B1 (name kept for ID continuity)."""
     canonical = build_canonical_seed_database()
     built = build_seed_database()
     try:
-        assert schema_version(canonical) == 5
+        assert schema_version(canonical) == 6
         counts = table_counts(canonical)
         assert {table: counts[table] for table in AI_TABLES} == {table: 0 for table in AI_TABLES}
         states = canonical.execute("SELECT account_id, state FROM accounts ORDER BY rowid").fetchall()
@@ -136,7 +138,8 @@ def test_the_approved_column_sets_and_no_deferred_provider_fields(db):
         "ai_runs": ["ai_run_id", "provider", "task_type", "task_version", "account_id", "interaction_id",
                     "requested_model", "sdk_name", "sdk_version", "prompt_version", "prompt_digest", "input_version",
                     "input_digest", "output_schema_version", "output_schema_digest", "canonicalization_version",
-                    "request_spec_version", "request_digest", "requested_at", "retry_of_ai_run_id"],
+                    "request_spec_version", "request_digest", "validation_version", "requested_at",
+                    "retry_of_ai_run_id"],
         "ai_run_results": ["ai_run_id", "status", "remote_outcome", "provider_message_id", "response_model",
                            "stop_reason", "provider_request_id", "input_tokens", "output_tokens",
                            "cache_creation_input_tokens", "cache_read_input_tokens", "failure_category",
@@ -197,7 +200,7 @@ def test_replace_guards_cover_every_unique_key_of_the_ai_tables(db):
 
 RUN_SQL = (
     "INSERT INTO ai_runs VALUES (?, 'anthropic', 'baec-evidence-extraction', 'v1', ?, ?, 'm', 'anthropic', '1', "
-    "'p', ?, 'i', ?, 'o', ?, 'c', 's', ?, '2026-04-01T09:00:00.000000+00:00', NULL)"
+    "'p', ?, 'i', ?, 'o', ?, 'c', 's', ?, 'baec-extraction-validation/v1', '2026-04-01T09:00:00.000000+00:00', NULL)"
 )
 
 
@@ -238,7 +241,8 @@ def test_provider_is_anthropic_and_a_run_is_never_its_own_retry(db):
         connection.execute("INSERT INTO ai_runs SELECT 'RAW-2', provider, task_type, task_version, account_id, "
                            "interaction_id, requested_model, sdk_name, sdk_version, prompt_version, prompt_digest, "
                            "input_version, input_digest, output_schema_version, output_schema_digest, "
-                           "canonicalization_version, request_spec_version, request_digest, requested_at, 'RAW-2' "
+                           "canonicalization_version, request_spec_version, request_digest, validation_version, "
+                           "requested_at, 'RAW-2' "
                            "FROM ai_runs WHERE ai_run_id = 'RAW-1'")
 
 
@@ -264,8 +268,9 @@ VALID_RESULTS = {
     "api_error": _result("api_error", "response_received", category="rate_limited"),
     "transport not sent": _result("transport_failure", "not_sent", category="connection_not_established"),
     "transport unknown": _result("transport_failure", "unknown", category="timeout_or_disconnect"),
-    "parse_failure": _result("parse_failure", "response_received", codes='["no_parsed_output"]'),
-    "semantic failure": _result("semantic_validation_failure", "response_received", codes='["x"]', out=D),
+    "parse_failure": _result("parse_failure", "response_received", codes='["invalid_json"]'),
+    "semantic failure": _result("semantic_validation_failure", "response_received", codes='["excerpt_not_verbatim"]',
+                                out=D),
     "model_mismatch": _result("model_mismatch", "response_received", model="other"),
     "interrupted": _result("interrupted", "unknown"),
 }
@@ -295,7 +300,8 @@ INVALID_RESULTS = {
     "unexpected_stop that is expected": _result("unexpected_stop", "response_received", stop="end_turn"),
     "unexpected_stop null stop": _result("unexpected_stop", "response_received"),
     "semantic failure without codes": _result("semantic_validation_failure", "response_received", out=D),
-    "semantic failure without output": _result("semantic_validation_failure", "response_received", codes='["x"]'),
+    "semantic failure without output": _result("semantic_validation_failure", "response_received",
+                                               codes='["excerpt_not_verbatim"]'),
     "codes on refusal": _result("refusal", "response_received", stop="refusal", codes='["x"]'),
     "model_mismatch without model": _result("model_mismatch", "response_received"),
     "malformed output digest": _result("refusal", "response_received", stop="refusal", out="ABC"),

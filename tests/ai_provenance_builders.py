@@ -32,6 +32,7 @@ from baec_app.domain.models import Account
 REQUESTED = datetime(2026, 4, 1, 9, 0, tzinfo=timezone.utc)
 COMPLETED = REQUESTED + timedelta(seconds=20)
 MODEL = "claude-sonnet-5-5"
+VALIDATION_VERSION = "baec-extraction-validation/v1"
 SOURCE_TEXT = (
     "Seller: Anything that would make you look at other suppliers?\n"
     "Buyer: If our supplier raises pricing by more than 10% at renewal, we'd evaluate other options.\n"
@@ -53,7 +54,7 @@ def digest(label: str) -> str:
 
 @pytest.fixture
 def db(tmp_path):
-    """A schema-v5 file database with ACC-1/INT-1 (the source) and ACC-2/INT-2 (another account)."""
+    """A schema-v6 file database with ACC-1/INT-1 (the source) and ACC-2/INT-2 (another account)."""
     path = str(tmp_path / "ai.sqlite3")
     connection = open_database(path)
     repository = Repository(connection)
@@ -86,6 +87,7 @@ def run_record(ai_run_id="RUN-1", **overrides) -> AiRunRecord:
         canonicalization_version="baec-ai-json-canonical/v1",
         request_spec_version="baec-ai-request-spec/v1",
         request_digest=digest("request"),
+        validation_version=VALIDATION_VERSION,
         requested_at=REQUESTED,
     )
     values.update(overrides)
@@ -105,9 +107,9 @@ def result_record(status: AiRunStatus, ai_run_id="RUN-1", *, output=True, **over
     elif status is AiRunStatus.UNEXPECTED_STOP:
         values.update(response, stop_reason="pause_turn")
     elif status is AiRunStatus.PARSE_FAILURE:
-        values.update(response, stop_reason="end_turn", failure_codes=("no_parsed_output",))
+        values.update(response, stop_reason="end_turn", failure_codes=("invalid_json",))
     elif status is AiRunStatus.SEMANTIC_VALIDATION_FAILURE:
-        values.update(response, stop_reason="end_turn", failure_codes=("excerpt_not_in_source:e2",),
+        values.update(response, stop_reason="end_turn", failure_codes=("excerpt_not_verbatim",),
                       output_digest=sha256_text(RAW_OUTPUT))
     elif status is AiRunStatus.MODEL_MISMATCH:
         values.update(response, response_model="claude-other-model", stop_reason="end_turn")

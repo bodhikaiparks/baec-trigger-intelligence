@@ -37,8 +37,12 @@ from baec_app.domain.enums import (
 # Version 4 added evidence fidelity: interaction evidence text must occur
 # verbatim in the text of the interaction it cites. Version 5 added the five
 # append-only Phase 6 AI provenance tables (docs/PHASE6_STRUCTURED_CLAUDE_PROVENANCE_DESIGN.md §10).
-SCHEMA_VERSION = 5
-MINIMUM_SQLITE_VERSION = (3, 37, 0)  # first version with STRICT tables
+# Version 6 added ai_runs.validation_version and the closed, status-specific
+# failure-code vocabulary (docs/PHASE6D_AI_BEHAVIOR_HARDENING_DESIGN.md §5-§6).
+SCHEMA_VERSION = 6
+# 3.37.0 is the first version with STRICT tables; 3.38.0 the first with JSON
+# functions built in by default, which the failure-code backstop uses.
+MINIMUM_SQLITE_VERSION = (3, 38, 0)
 
 
 class PersistenceError(Exception):
@@ -200,6 +204,46 @@ AI_API_ERROR_CATEGORIES = (
 AI_SPEAKER_LABELS = ("buyer", "seller", "unclear")
 # Each transport category implies its delivery state.
 AI_TRANSPORT_CATEGORIES = {"connection_not_established": "not_sent", "timeout_or_disconnect": "unknown"}
+
+# Closed failure-code vocabularies (Phase 6D design §5.1), duplicated from the AI
+# layer with equality tests. Fixed machine tokens with no variable part.
+# parse_failure carries exactly one parse code. semantic_validation_failure carries
+# one or more codes, sorted and unique, from the vocabulary of the validator
+# version its run recorded: a code is legal only under a validator that can emit it.
+# Validation v2 and its grounding codes are added here by 6D-B2, not before.
+AI_PARSE_FAILURE_CODES = (
+    "invalid_json",
+    "missing_stop_reason",
+    "missing_text_block",
+    "multiple_text_blocks",
+    "structured_output_validation_failed",
+)
+AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION = {
+    "baec-extraction-validation/v1": (
+        "criterion_set_invalid",
+        "duplicate_excerpt_id",
+        "duplicate_excerpt_reference",
+        "duplicate_excerpt_text",
+        "excerpt_blank",
+        "excerpt_id_blank",
+        "excerpt_not_verbatim",
+        "explanation_blank",
+        "explanation_too_long",
+        "normalization_blank",
+        "normalization_too_long",
+        "possible_language_without_excerpt",
+        "source_interaction_mismatch",
+        "supported_without_excerpt",
+        "too_many_excerpt_references",
+        "too_many_excerpts",
+        "too_many_uncertainties",
+        "uncertainty_blank",
+        "uncertainty_too_long",
+        "unknown_excerpt_reference",
+    ),
+}
+# Every semantic code legal under some known validator version.
+AI_SEMANTIC_FAILURE_CODES = tuple(sorted(set().union(*AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION.values())))
 
 
 def _values(members) -> str:
@@ -448,7 +492,7 @@ def _schema_statements() -> list[str]:
     return statements
 
 
-# --- Phase 6 AI provenance (schema version 5) --------------------------------
+# --- Phase 6 AI provenance (schema versions 5 and 6) --------------------------------
 #
 # Records of AI runs, their single terminal result, the raw returned model
 # text, and successful structured artifacts with their source excerpts. AI
@@ -478,6 +522,8 @@ def _ai_provenance_tables() -> list[str]:
         canonicalization_version TEXT NOT NULL CHECK (canonicalization_version <> ''),
         request_spec_version TEXT NOT NULL CHECK (request_spec_version <> ''),
         request_digest TEXT NOT NULL CHECK {_sha256('request_digest')},
+        -- Never blank or ASCII-whitespace-only; stored exactly as given, never trimmed.
+        validation_version TEXT NOT NULL CHECK (trim(validation_version, {_SQL_WHITESPACE}) <> ''),
         requested_at TEXT NOT NULL,
         retry_of_ai_run_id TEXT REFERENCES ai_runs (ai_run_id) ON DELETE RESTRICT,
         CHECK (retry_of_ai_run_id IS NULL OR retry_of_ai_run_id <> ai_run_id),
@@ -537,8 +583,10 @@ def _ai_provenance_tables() -> list[str]:
             ))
             OR (status NOT IN ('api_error', 'transport_failure') AND failure_category IS NULL)
         ),
+        -- Failure-code cardinality and vocabulary are also checked by ai_run_results_failure_codes_closed.
         CHECK (status IN ('parse_failure', 'semantic_validation_failure') OR failure_codes IS NULL),
-        CHECK (status <> 'semantic_validation_failure' OR failure_codes IS NOT NULL)
+        CHECK (status <> 'semantic_validation_failure' OR failure_codes IS NOT NULL),
+        CHECK (status <> 'parse_failure' OR failure_codes IS NOT NULL)
     ) STRICT""",
         f"""
     CREATE TABLE ai_run_outputs (
@@ -599,6 +647,39 @@ def _ai_provenance_triggers() -> list[str]:
     BEGIN
         SELECT RAISE(ABORT, 'ai_run_results response model disagrees with its status');
     END""",
+        # Closed failure codes (Phase 6D design §5.1). failure_codes must be a JSON array
+        # of text: exactly one parse code under parse_failure; one or more codes from the
+        # run's validator-version vocabulary under semantic_validation_failure, strictly
+        # increasing (sorted and unique); NULL under every other status. CASE keeps the
+        # JSON functions away from invalid JSON. Canonical spelling is checked by the store.
+        f"""
+    CREATE TRIGGER ai_run_results_failure_codes_closed
+    BEFORE INSERT ON ai_run_results
+    WHEN NOT COALESCE(CASE
+        WHEN NEW.status = 'parse_failure' THEN CASE
+            WHEN json_valid(NEW.failure_codes) AND json_type(NEW.failure_codes) = 'array' THEN
+                json_array_length(NEW.failure_codes) = 1
+                AND json_type(NEW.failure_codes, '$[0]') = 'text'
+                AND json_extract(NEW.failure_codes, '$[0]') IN ({_tokens(AI_PARSE_FAILURE_CODES)})
+            ELSE 0 END
+        WHEN NEW.status = 'semantic_validation_failure' THEN CASE
+            WHEN json_valid(NEW.failure_codes) AND json_type(NEW.failure_codes) = 'array' THEN
+                json_array_length(NEW.failure_codes) >= 1
+                AND NOT EXISTS (
+                    SELECT 1 FROM json_each(NEW.failure_codes) AS code
+                    WHERE code.type <> 'text' OR NOT COALESCE({_semantic_vocabulary_sql()}, 0)
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM json_each(NEW.failure_codes) AS earlier
+                    JOIN json_each(NEW.failure_codes) AS later ON later.key = earlier.key + 1
+                    WHERE NOT COALESCE(earlier.value < later.value, 0)
+                )
+            ELSE 0 END
+        ELSE NEW.failure_codes IS NULL
+    END, 0)
+    BEGIN
+        SELECT RAISE(ABORT, 'ai_run_results failure_codes are outside the closed vocabulary for the status');
+    END""",
         # Returned text is stored only under a result that names the same digest.
         """
     CREATE TRIGGER ai_run_outputs_require_result
@@ -638,8 +719,17 @@ def _ai_provenance_triggers() -> list[str]:
     ]
 
 
+def _semantic_vocabulary_sql() -> str:
+    """code.value is legal under the validator version recorded by NEW's run."""
+    run_version = "(SELECT validation_version FROM ai_runs WHERE ai_run_id = NEW.ai_run_id)"
+    return "(" + " OR ".join(
+        f"({run_version} = '{version}' AND code.value IN ({_tokens(codes)}))"
+        for version, codes in AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION.items()
+    ) + ")"
+
+
 def check_sqlite_version(version_info: tuple[int, ...] | None = None) -> None:
-    """Refuse to run on an SQLite too old for STRICT tables."""
+    """Refuse to run on an SQLite too old for STRICT tables and built-in JSON functions."""
     found = sqlite3.sqlite_version_info if version_info is None else version_info
     if tuple(found) < MINIMUM_SQLITE_VERSION:
         needed = ".".join(str(part) for part in MINIMUM_SQLITE_VERSION)

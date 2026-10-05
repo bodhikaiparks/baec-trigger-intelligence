@@ -278,7 +278,7 @@ def test_the_evaluation_database_holds_only_the_fixtures_with_empty_ai_tables(tm
     harness.build_evaluation_database(path, corpus)
     connection = connect(str(path))
     try:
-        assert schema_version(connection) == 5
+        assert schema_version(connection) == 6
         assert connection.execute("SELECT account_id FROM accounts ORDER BY rowid").fetchall() == [
             (c.account_id,) for c in corpus.cases]
         assert connection.execute("SELECT text FROM interactions ORDER BY rowid").fetchall() == [
@@ -484,7 +484,8 @@ def _audit_for(model, outcomes, authority_unchanged=True, **changes):
     """A persisted-audit summary that agrees with the given outcomes."""
     cases = tuple(
         CaseAudit(o.case_id, o.ai_run_id, True, o.status not in ("incomplete", "not_started"), model, model, o.status,
-                  "response_received", "spec/v1", "prompt/v1", "input/v1", "schema/v1", "canon/v1", True, True, True, True,
+                  "response_received", "spec/v1", "prompt/v1", "input/v1", "schema/v1", "canon/v1", "validation/v1", True,
+                  True, True, True,
                   True, o.artifact_present, 1 if o.artifact_present else 0, o.provenance_ok)
         for o in outcomes)
     audit = harness.summarize_audit(cases, model=model, cases_expected=len(cases), authority_unchanged=authority_unchanged,
@@ -676,6 +677,7 @@ LOCKED_VERSIONS = {
     "input_version": "baec-extraction-input/v1",
     "output_schema_version": "baec-extraction-output/v1",
     "canonicalization_version": "baec-canonical-json/v1",
+    "validation_version": "baec-extraction-validation/v1",
 }
 ALL_DIGESTS = ("request_digest_present", "prompt_digest_present", "input_digest_present", "output_schema_digest_present")
 TEST_MODEL = "claude-test-model-5"

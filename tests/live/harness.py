@@ -10,7 +10,7 @@ Order of work, each step before the next:
 1. live_gate: BAEC_LIVE_CLAUDE=1, an explicit BAEC_LIVE_MODEL from the comparison
    set, and configured SDK authentication (checked by name only, never read out).
 2. load_corpus: the corpus is validated before any database or provider exists.
-3. A fresh temporary schema-v5 database holding only the corpus fixtures.
+3. A fresh temporary schema-v6 database holding only the corpus fixtures.
 4. A snapshot of every authoritative (non-AI) table.
 5. One case at a time, serially, each terminal outcome persisted before the next,
    then checked by the status-aware CORE-PROVENANCE check.
@@ -227,7 +227,7 @@ FIXTURE_TIME = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
 
 
 def build_evaluation_database(path: Path, corpus: Corpus) -> None:
-    """A new schema-v5 file holding only the corpus fixtures; every AI table starts empty."""
+    """A new schema-v6 file holding only the corpus fixtures; every AI table starts empty."""
     if Path(path).exists():
         raise FileExistsError("the evaluation database must be new")
     connection = open_database(str(path))
@@ -487,7 +487,7 @@ def verify_provenance(store: AiProvenanceStore, ai_run_id: str | None):
 
 @dataclass(frozen=True)
 class CaseAudit:
-    """One attempted case, read back from the persisted schema-v5 records before cleanup.
+    """One attempted case, read back from the persisted schema-v6 records before cleanup.
 
     Identifiers, version labels, statuses, model IDs, booleans, and a count only: never stored
     text, canonical results, excerpts, prompts, or digest values.
@@ -506,6 +506,7 @@ class CaseAudit:
     input_version: str | None
     output_schema_version: str | None
     canonicalization_version: str | None
+    validation_version: str | None
     request_digest_present: bool
     prompt_digest_present: bool
     input_digest_present: bool
@@ -556,8 +557,8 @@ def _audit_case(store: AiProvenanceStore, connection, case_id: str, ai_run_id: s
     fields = dict(case_id=case_id, ai_run_id=ai_run_id, run_present=False, terminal_result_present=False,
                   requested_model=None, returned_model=None, terminal_status=None, remote_outcome=None,
                   request_spec_version=None, prompt_version=None, input_version=None, output_schema_version=None,
-                  canonicalization_version=None, request_digest_present=False, prompt_digest_present=False,
-                  input_digest_present=False, output_schema_digest_present=False, output_present=False,
+                  canonicalization_version=None, validation_version=None, request_digest_present=False,
+                  prompt_digest_present=False, input_digest_present=False, output_schema_digest_present=False, output_present=False,
                   artifact_present=False, excerpt_count=0, provenance_verified=False)
     if ai_run_id is None:
         return CaseAudit(**fields)  # no run was ever recorded for this case
@@ -571,6 +572,7 @@ def _audit_case(store: AiProvenanceStore, connection, case_id: str, ai_run_id: s
                   prompt_version=run.prompt_version, input_version=run.input_version,
                   output_schema_version=run.output_schema_version,
                   canonicalization_version=run.canonicalization_version,
+                  validation_version=run.validation_version,
                   request_digest_present=_digest_present(run.request_digest),
                   prompt_digest_present=_digest_present(run.prompt_digest),
                   input_digest_present=_digest_present(run.input_digest),
@@ -679,7 +681,7 @@ def audit_lines(audit: RunAudit | None) -> list[str]:
         f"requested={c.requested_model or '-'} returned={c.returned_model or '-'} status={c.terminal_status or '-'} "
         f"remote={c.remote_outcome or '-'} spec={c.request_spec_version or '-'} prompt={c.prompt_version or '-'} "
         f"input={c.input_version or '-'} schema={c.output_schema_version or '-'} "
-        f"canonicalization={c.canonicalization_version or '-'} "
+        f"canonicalization={c.canonicalization_version or '-'} validation={c.validation_version or '-'} "
         f"digests=request:{_yes(c.request_digest_present)},prompt:{_yes(c.prompt_digest_present)},"
         f"input:{_yes(c.input_digest_present)},schema:{_yes(c.output_schema_digest_present)} "
         f"output={_yes(c.output_present)} artifact={_yes(c.artifact_present)} excerpts={c.excerpt_count} "
