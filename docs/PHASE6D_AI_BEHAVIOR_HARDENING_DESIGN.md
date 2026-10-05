@@ -1,7 +1,7 @@
 # Phase 6D Design: AI Behavior Hardening
 
-> **Approved design — not implemented.**
-> The architectural decisions in this document were approved in Phase 6D-A. No Phase 6D code, schema change, corpus change, or test exists yet. Nothing here describes implemented or tested behavior.
+> **Historical design — implemented and verified.**
+> Phase 6D is complete; final verification is recorded in `docs/PHASE6_FINAL_VERIFICATION.md`. The sections below are the design as approved in Phase 6D-A, with their marked clarifications.
 
 **Project:** BAEC Trigger Intelligence
 **Baseline:** commit `7a3bae8f38aa0c15c90fcbd9415dc914744fe24c` (Phase 6C closed), schema version 5, 3970 tests passing, 1 deselected.
@@ -620,3 +620,9 @@ AI remains unexposed through MCP. The prompt, input, output schema, request spec
 > - **Decision:** validation v2 is preserved unchanged, and `baec-extraction-prompt/v2` states the grounding rules for every model-authored free-text field (both normalizations, every explanation, every uncertainty): no unsupported number, number word, percentage, currency amount, unit-bearing quantity, or count; magnitude, numeric kind, unit, and comparator preserved when a supported value is mentioned; `past`, `beyond`, `within`, and `over` repeated exactly; and unnecessary numeric restatement avoided. The task, input, output schema, request specification, canonicalization, timeout, and retry policy are unchanged; the prompt digest and the request digest change. Prompt v1 stays frozen as the historical identity of the Phase 6C and E2 runs.
 >
 > Prompt v2 is an alignment correction discovered through live verification, not a BAEC research finding. This supersedes, for prompt identity only, the statements in §12 and above that the prompt is unchanged.
+
+---
+
+## Phase 6D closeout
+
+**Label: Status note.** Phase 6D implementation and live verification are complete; Phase 6 is closed. Final results, evidence hashes, and the conclusion are in `docs/PHASE6_FINAL_VERIFICATION.md`: operational verification PASS; behavioral eligibility FAIL for `claude-sonnet-5-5` on corpus v2 (C05 and C07, `explanation_number_unsupported`); no model is designated as the product default.
