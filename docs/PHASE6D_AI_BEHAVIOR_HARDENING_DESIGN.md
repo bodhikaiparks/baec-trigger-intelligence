@@ -428,6 +428,12 @@ aggregate               { calls_attempted, terminal_status_counts, successful_ar
 
 The builder uses an allowlist: every string is an identifier, version label, closed code, or sanitized model ID.
 
+> **Phase 6D-C2 clarification (amendment; label: Evaluation rule).**
+>
+> The offline strict-loader implementation exposed one evidence-completeness gap in `baec-live-evaluation-report/v1`: `audit_failure` could include a disagreement between the service-returned terminal status and the persisted terminal status, but v1 serialized only the persisted status, so that part of audit validity could not be recomputed independently.
+>
+> Therefore `baec-live-evaluation-report/v1` is superseded before its first authorized live use, and `baec-live-evaluation-report/v2` adds, per case, the sanitized closed value `service_terminal_status` (the status the extraction service returned in memory, or `null` when it returned no terminal result) alongside `terminal_status` (read back from persisted provenance). The strict loader re-derives their agreement; a disagreement is an `audit_failure` and makes the run operationally invalid. A v1 file is refused by the loader: it is never migrated, upgraded, or compared. This is an evaluation-evidence integrity correction, not a BAEC research claim.
+
 ## 9. Report persistence and the live gate
 
 **Label: Evaluation rule.**

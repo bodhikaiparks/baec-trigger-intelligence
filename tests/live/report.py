@@ -4,7 +4,7 @@ Evaluation rules (docs/PHASE6D_AI_BEHAVIOR_HARDENING_DESIGN.md §7-§9). This is
 only: production code gains no Git or filesystem dependency, and nothing here imports the production
 validator, the grounding module, or the SDK.
 
-baec-live-evaluation-report/v1 is built from the immutable outcomes and audit that run_evaluation projected
+baec-live-evaluation-report/v2 is built from the immutable outcomes and audit that run_evaluation projected
 from the persisted records while the temporary database existed. The builder therefore never needs the
 database, and the report survives its deletion. Every string in a report is checked against an allowlist:
 an identifier, a version label, a closed code, an exception class name, or a sanitized model ID. Source text,
@@ -33,7 +33,7 @@ from typing import Callable, Mapping
 from baec_app.ai.canonical import CANONICALIZATION_VERSION, canonical_json
 from baec_app.ai.contracts import INPUT_VERSION, OUTPUT_SCHEMA_VERSION, REQUEST_SPEC_VERSION, TASK_VERSION
 from baec_app.ai.prompts import PROMPT_VERSION
-from baec_app.data.ai_provenance import AiRemoteOutcome
+from baec_app.data.ai_provenance import AiRemoteOutcome, AiRunStatus
 from baec_app.data.database import AI_PARSE_FAILURE_CODES, AI_SEMANTIC_FAILURE_CODES
 from tests.live.harness import (
     CASE_STATUSES,
@@ -54,7 +54,10 @@ from tests.live.harness import (
     validate_corpus,
 )
 
-REPORT_VERSION = "baec-live-evaluation-report/v1"
+REPORT_VERSION = "baec-live-evaluation-report/v2"
+# Superseded before any authorized live use (design §8, Phase 6D-C2 clarification): v1 did not record the
+# service-returned status, so its audit could not be recomputed. Never written, never upgraded, never compared.
+RETIRED_REPORT_VERSIONS = ("baec-live-evaluation-report/v1",)
 REPORT_DIR_VARIABLE = "BAEC_LIVE_REPORT_DIR"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Duplicated from production with equality tests, so this layer never imports the validator or the SDK.
@@ -75,6 +78,9 @@ OPERATIONAL_FAILURES = frozenset(OPERATIONALLY_INVALID_STATUSES) | {
     "provenance_failure", "authority_mutation", "audit_failure", "cleanup_failure", "report_failure"}
 REPORT_CRITICAL_CLASSES = frozenset(CRITICAL_CLASSES) | {TERMINAL_FAILURE}
 REMOTE_OUTCOMES = frozenset(o.value for o in AiRemoteOutcome)
+# Terminal statuses the extraction service itself can return (interrupted is an operator action in the data
+# layer only). Pinned to the AI layer's RunStatus by an equality test.
+SERVICE_TERMINAL_STATUSES = tuple(s.value for s in AiRunStatus if s is not AiRunStatus.INTERRUPTED)
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _CASE_ID = re.compile(r"C\d{2}")
@@ -155,7 +161,8 @@ class ReportCheck:
 class ReportCase:
     case_id: str
     ai_run_id: str | None
-    terminal_status: str
+    terminal_status: str  # read back from the persisted AI provenance
+    service_terminal_status: str | None  # what the service returned in memory; None if it returned no terminal result
     artifact_present: bool
     failure_codes: tuple[str, ...]
     error_class: str | None
@@ -168,6 +175,8 @@ class ReportCase:
         _require(_matches(_CASE_ID, self.case_id)
                  and (self.ai_run_id is None or _matches(_IDENTIFIER, self.ai_run_id))
                  and self.terminal_status in CASE_STATUSES and type(self.artifact_present) is bool
+                 and (self.service_terminal_status is None
+                      or self.service_terminal_status in SERVICE_TERMINAL_STATUSES)
                  and _codes(self.failure_codes)
                  and (self.error_class is None or _matches(_CLASS_NAME, self.error_class))
                  and _count(self.elapsed_ms) and _count(self.input_tokens, optional=True)
@@ -273,6 +282,7 @@ def _report_case(outcome: CaseOutcome) -> ReportCase:
         case_id=outcome.case_id,
         ai_run_id=None if outcome.ai_run_id == "-" else outcome.ai_run_id,
         terminal_status=outcome.status,
+        service_terminal_status=outcome.reported_status,  # captured in memory before the database was deleted
         artifact_present=outcome.artifact_present,
         failure_codes=outcome.failure_codes,  # the persisted codes, read back in _evaluate_case
         error_class=outcome.error,
@@ -399,7 +409,8 @@ def to_json_object(report: LiveEvaluationReport) -> dict:
         "returned_model_ids": list(report.returned_model_ids),
         "cases": [{
             "case_id": c.case_id, "ai_run_id": c.ai_run_id, "terminal_status": c.terminal_status,
-            "artifact_present": c.artifact_present, "failure_codes": list(c.failure_codes),
+            "service_terminal_status": c.service_terminal_status, "artifact_present": c.artifact_present,
+            "failure_codes": list(c.failure_codes),
             "error_class": c.error_class, "elapsed_ms": c.elapsed_ms, "input_tokens": c.input_tokens,
             "output_tokens": c.output_tokens,
             "checks": [{"check_id": k.check_id, "kind": k.kind, "passed": k.passed, "code": k.code,

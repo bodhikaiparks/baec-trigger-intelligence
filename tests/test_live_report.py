@@ -314,8 +314,8 @@ def test_case_lines_show_bounded_observational_outcomes():
 
 TOP_LEVEL = {"report_version", "generated_at", "source", "corpus", "versions", "transport", "requested_model",
              "returned_model_ids", "cases", "audit", "authority_unchanged", "aggregate"}
-CASE_FIELDS = {"case_id", "ai_run_id", "terminal_status", "artifact_present", "failure_codes", "error_class",
-               "elapsed_ms", "input_tokens", "output_tokens", "checks"}
+CASE_FIELDS = {"case_id", "ai_run_id", "terminal_status", "service_terminal_status", "artifact_present", "failure_codes",
+               "error_class", "elapsed_ms", "input_tokens", "output_tokens", "checks"}
 CHECK_FIELDS = {"check_id", "kind", "passed", "code", "critical_class"}
 AGGREGATE_FIELDS = {"calls_attempted", "terminal_status_counts", "successful_artifacts", "hard_passed", "hard_total",
                     "critical_failures", "observational_passed", "observational_total", "operational_failures",
@@ -324,7 +324,7 @@ AGGREGATE_FIELDS = {"calls_attempted", "terminal_status_counts", "successful_art
 
 def test_the_report_has_exactly_the_v1_fields():
     data = to_json_object(build(evaluate()))
-    assert set(data) == TOP_LEVEL and data["report_version"] == REPORT_VERSION == "baec-live-evaluation-report/v1"
+    assert set(data) == TOP_LEVEL and data["report_version"] == REPORT_VERSION == "baec-live-evaluation-report/v2"
     assert data["generated_at"] == "2026-10-05T12:30:15Z"
     assert data["source"] == {"commit": COMMIT, "working_tree_clean": True}
     assert data["corpus"] == {"version": CORPUS_VERSION, "case_count": 14, "sha256": V1_SHA256}
