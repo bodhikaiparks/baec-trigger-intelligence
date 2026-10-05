@@ -61,6 +61,14 @@ EXPECTED_COUNTS = {
     "ai_run_outputs": 0,
     "ai_artifacts": 0,
     "ai_artifact_excerpts": 0,
+    # Schema version 7: the Phase 7 bridge tables start empty in the canonical seed.
+    "ai_proposals": 0,
+    "ai_proposal_review_revisions": 0,
+    "ai_proposal_review_decisions": 0,
+    "human_authorization_grants": 0,
+    "human_authorization_grant_supersessions": 0,
+    "ai_proposal_confirmations": 0,
+    "human_authorization_grant_consumptions": 0,
 }
 
 

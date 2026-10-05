@@ -607,9 +607,9 @@ def test_production_code_obeys_the_rule(rule):
 
 
 def test_proposal_origins_are_exactly_human_draft_and_deterministic():
-    assert [o.value for o in ProposalOrigin] == ["HUMAN_DRAFT", "DETERMINISTIC"], (
-        "AI_MODEL or any other origin may not be added until persistent AI-origin provenance "
-        "is designed and implemented (PHASE4 design §18)."
+    """Phase 7C added AI_DRAFT once persistent AI-origin provenance existed (name kept for ID continuity)."""
+    assert [o.value for o in ProposalOrigin] == ["HUMAN_DRAFT", "DETERMINISTIC", "AI_DRAFT"], (
+        "No other origin may be added; AI_MODEL stays absent (PHASE4 design §18; PHASE7 design §6.4)."
     )
 
 

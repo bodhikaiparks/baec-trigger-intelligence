@@ -462,9 +462,10 @@ def test_the_validator_version_is_append_only_like_every_run_column(db):
 
 
 def test_schema_v6_adds_a_required_validation_version_to_ai_runs_only():
+    """Schema version 7 since Phase 7C (name kept for ID continuity); version 7 changed no ai_* table."""
     connection = open_database()
     try:
-        assert database.SCHEMA_VERSION == schema_version(connection) == 6
+        assert database.SCHEMA_VERSION == schema_version(connection) == 7
         assert database.MINIMUM_SQLITE_VERSION == (3, 38, 0)
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(ai_runs)")}
         assert columns["validation_version"][2:4] == ("TEXT", 1)  # type, NOT NULL
@@ -609,9 +610,10 @@ def test_the_store_refuses_a_connection_still_at_schema_v5():
 
 
 def test_the_canonical_seed_is_schema_v6_with_the_column_and_empty_ai_tables():
+    """Schema version 7 since Phase 7C (name kept for ID continuity)."""
     canonical = build_canonical_seed_database()
     try:
-        assert schema_version(canonical) == 6
+        assert schema_version(canonical) == 7
         assert "validation_version" in {row[1] for row in canonical.execute("PRAGMA table_info(ai_runs)")}
         counts = table_counts(canonical)
         assert all(counts[table] == 0 for table in database.AI_PROVENANCE_TABLES)

@@ -29,7 +29,9 @@ from baec_app.application.proposals import (
     MoveToActiveProposal,
     MoveToDormantProposal,
     MoveToNoPlausiblePathProposal,
+    PROPOSAL_TYPES,
     ProposalOrigin,
+    require_phase4_origin,
 )
 from baec_app.application.requests import ApprovalRequest, ClassificationPreview
 from baec_app.domain.enums import NoPlausiblePathGround, ReviewAnswer
@@ -170,8 +172,15 @@ class HumanCommandFacade:
     # --- proposals into requests -----------------------------------------------------
 
     def request_from_proposal(self, session: InteractionSession, proposal: object) -> ApprovalRequest:
-        """Turn a proposal into a request through the normal request path. Grants nothing."""
+        """Turn a proposal into a request through the normal request path. Grants nothing.
+
+        An AI_DRAFT is refused here explicitly (AiDraftNotPermitted), before any dispatch,
+        even on an object that bypassed the proposal constructors: AI drafts reach a domain
+        write only through the Phase 7 persisted review and grant.
+        """
         kind = type(proposal)
+        if kind in PROPOSAL_TYPES:
+            require_phase4_origin(proposal.origin, f"{kind.__name__}.origin")
         if kind is ConfirmationProposal:
             return self.request_baec_confirmation(
                 session, proposal.candidate, captured_at=proposal.captured_at, origin=proposal.origin

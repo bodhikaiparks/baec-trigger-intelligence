@@ -1,4 +1,4 @@
-"""Stores and reloads Phase 6 AI provenance (schema version 6).
+"""Stores and reloads Phase 6 AI provenance (tables introduced in schema versions 5 and 6).
 
 Concrete persistence for docs/PHASE6_STRUCTURED_CLAUDE_PROVENANCE_DESIGN.md §10.
 It records AI runs, each run's single terminal result, the raw returned model
@@ -22,7 +22,7 @@ Rules this module follows:
   A semantic code is legal only under the validator version its run recorded.
 * The store never reads the clock; timestamps are supplied by callers.
 * open_ai_provenance_store(path) is the only opener: it opens an existing
-  schema-v6 file with foreign keys enforced, never creates one, and returns a
+  current-schema file with foreign keys enforced, never creates one, and returns a
   store that owns (and closes) its connection. A store built directly from a
   connection does not own it.
 """
@@ -473,7 +473,7 @@ class AiProvenanceStoreUnavailable(PersistenceError):
 
 
 def open_ai_provenance_store(path: str | os.PathLike[str]) -> AiProvenanceStore:
-    """Open an existing schema-v6 database for AI provenance writes, never creating one.
+    """Open an existing current-schema database for AI provenance writes, never creating one.
 
     Accepts a str or an os.PathLike[str]. Refuses blank paths, ":memory:", file: URIs,
     missing files, directories, and non-databases; DatabaseVersionError propagates for

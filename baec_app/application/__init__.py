@@ -11,6 +11,7 @@ from baec_app.application.approval import HumanApproval
 from baec_app.application.composition import build_command_facade, build_proposal_facade, open_read_connection
 from baec_app.application.context import Actor, Clock, IdFactory, InteractionSession, SystemClock, UuidIdFactory
 from baec_app.application.errors import (
+    AiDraftNotPermitted,
     ApplicationError,
     ApplicationValidationError,
     ApprovalAlreadyUsed,
@@ -49,6 +50,7 @@ from baec_app.data.records import PersistedDormancyJudgment, SourceInteraction, 
 
 __all__ = [
     "Actor",
+    "AiDraftNotPermitted",
     "ApplicationError",
     "ApplicationValidationError",
     "ApprovalAlreadyUsed",

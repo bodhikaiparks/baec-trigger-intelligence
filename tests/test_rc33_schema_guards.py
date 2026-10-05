@@ -18,6 +18,9 @@ from baec_app.data.database import (
     APPEND_ONLY_TABLES,
     BAEC_RECORD_MUTABLE_COLUMNS,
     BAEC_RECORD_PROTECTED_COLUMNS,
+    BRIDGE_APPEND_ONLY_TABLES,
+    BRIDGE_INTEGRITY_TRIGGERS,
+    BRIDGE_REPLACE_GUARDED_KEYS,
     REPLACE_GUARDED_KEYS,
     DatabaseVersionError,
     create_working_copy,
@@ -51,6 +54,10 @@ EXPECTED_TRIGGERS = sorted(
        "ai_artifacts_require_success", "ai_artifact_excerpts_verbatim"]
     # Schema version 6 (Phase 6D-B1): the closed failure-code backstop.
     + ["ai_run_results_failure_codes_closed"]
+    # Schema version 7 (Phase 7C): the bridge tables' triggers.
+    + [f"{table}_no_{op}" for table in BRIDGE_APPEND_ONLY_TABLES for op in ("update", "delete")]
+    + [f"{table}_no_replace" for table in BRIDGE_REPLACE_GUARDED_KEYS]
+    + list(BRIDGE_INTEGRITY_TRIGGERS)
 )
 
 
@@ -278,7 +285,7 @@ def test_rc33_guards_are_present_in_working_copies_and_the_canonical_seed():
         try:
             assert _trigger_names(canonical) == EXPECTED_TRIGGERS
             assert _trigger_names(working) == EXPECTED_TRIGGERS
-            assert len(EXPECTED_TRIGGERS) == 34 + 19 + 1
+            assert len(EXPECTED_TRIGGERS) == 34 + 19 + 1 + 38
             row = working.execute("SELECT * FROM interactions ORDER BY rowid").fetchone()
             refused(
                 working,

@@ -70,6 +70,15 @@ class ProposalNotAuthoritative(ApplicationError):
     """
 
 
+class AiDraftNotPermitted(ApplicationError):
+    """An AI_DRAFT origin reached the Phase 4 in-memory proposal/request path.
+
+    AI_DRAFT content goes only through the Phase 7 persisted human review and a
+    later persisted human grant. It never becomes a Phase 4 proposal, request,
+    or approval, so it can never reach a domain write through the in-memory gate.
+    """
+
+
 class NotConfirmable(ApplicationError):
     """The locked classifier did not return CONFIRMED_BAEC, so no confirmation request is opened.
 

@@ -17,7 +17,7 @@ from enum import Enum
 
 from baec_app.application.canonical import digest_request
 from baec_app.application.errors import ApplicationValidationError
-from baec_app.application.proposals import ProposalOrigin
+from baec_app.application.proposals import ProposalOrigin, require_phase4_origin
 from baec_app.domain.baec_rules import ClassificationResult, classify_candidate
 from baec_app.domain.enums import (
     AccountState,
@@ -238,6 +238,7 @@ class ApprovalRequest:
         _require_aware(self.opened_at, "ApprovalRequest.opened_at")
         _require_exact(self.kind, RequestKind, "ApprovalRequest.kind")
         _require_exact(self.origin, ProposalOrigin, "ApprovalRequest.origin")
+        require_phase4_origin(self.origin, "ApprovalRequest.origin")
         payload_type, action, subject_field, target = _KINDS[self.kind]
         _require_exact(self.payload, payload_type, "ApprovalRequest.payload")
         if self.action is not action:
@@ -272,6 +273,7 @@ def build_request(
     """Build a request, deriving action, subject, target, and digest from kind and payload."""
     _require_exact(kind, RequestKind, "kind")
     _require_exact(origin, ProposalOrigin, "origin")
+    require_phase4_origin(origin, "origin")
     payload_type, action, subject_field, target = _KINDS[kind]
     _require_exact(payload, payload_type, "payload")
     subject_id = getattr(payload, subject_field)

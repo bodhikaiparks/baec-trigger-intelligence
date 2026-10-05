@@ -39,7 +39,10 @@ from baec_app.domain.enums import (
 # append-only Phase 6 AI provenance tables (docs/PHASE6_STRUCTURED_CLAUDE_PROVENANCE_DESIGN.md §10).
 # Version 6 added ai_runs.validation_version and the closed, status-specific
 # failure-code vocabulary (docs/PHASE6D_AI_BEHAVIOR_HARDENING_DESIGN.md §5-§6).
-SCHEMA_VERSION = 6
+# Version 7 added the seven append-only Phase 7 AI proposal bridge tables
+# (docs/PHASE7_HUMAN_AUTHORIZED_AI_PROPOSAL_BRIDGE_DESIGN.md §13). It is purely
+# additive: a version-6 file can be upgraded in place with migrate_v6_to_v7().
+SCHEMA_VERSION = 7
 # 3.37.0 is the first version with STRICT tables; 3.38.0 the first with JSON
 # functions built in by default, which the failure-code backstop uses.
 MINIMUM_SQLITE_VERSION = (3, 38, 0)
@@ -76,6 +79,26 @@ INTERACTION_EVIDENCE_PROVENANCE = (
     ProvenanceCategory.SELLER_OBSERVATION,
 )
 
+# Phase 6 AI provenance (schema version 5). AI interpretation, never domain evidence.
+AI_PROVENANCE_TABLES = (
+    "ai_runs",
+    "ai_run_results",
+    "ai_run_outputs",
+    "ai_artifacts",
+    "ai_artifact_excerpts",
+)
+# Phase 7 AI proposal bridge (schema version 7). AI_DRAFT proposals, immutable human
+# review history, and the grant, supersession, confirmation-link, and consumption
+# history of the later human-authorized confirmation. Never buyer evidence.
+BRIDGE_TABLES = (
+    "ai_proposals",
+    "ai_proposal_review_revisions",
+    "ai_proposal_review_decisions",
+    "human_authorization_grants",
+    "human_authorization_grant_supersessions",
+    "ai_proposal_confirmations",
+    "human_authorization_grant_consumptions",
+)
 DATA_TABLES = (
     "accounts",
     "interactions",
@@ -89,15 +112,7 @@ DATA_TABLES = (
     "evaluation_evidence",
     "non_evaluation_evidence",
     "account_state_transitions",
-) + (
-    # Phase 6 AI provenance (schema version 5). AI interpretation, never domain evidence.
-    "ai_runs",
-    "ai_run_results",
-    "ai_run_outputs",
-    "ai_artifacts",
-    "ai_artifact_excerpts",
-)
-AI_PROVENANCE_TABLES = DATA_TABLES[-5:]
+) + AI_PROVENANCE_TABLES + BRIDGE_TABLES
 ALL_TABLES = ("schema_meta",) + DATA_TABLES
 
 APPEND_ONLY_TABLES = (
@@ -163,6 +178,42 @@ AI_REPLACE_GUARDED_KEYS = {
     "ai_artifacts": (("artifact_id",), ("ai_run_id",)),
     "ai_artifact_excerpts": (("artifact_id", "excerpt_id"), ("artifact_id", "interaction_id", "text")),
 }
+
+# The Phase 7 bridge tables are append-only too, kept apart from the Phase 3 and
+# Phase 6 constants above so those keep their meaning. Every UNIQUE key is guarded
+# against REPLACE; the one partial unique index (one rejection per proposal) is
+# guarded separately in _bridge_triggers().
+BRIDGE_APPEND_ONLY_TABLES = BRIDGE_TABLES
+BRIDGE_REPLACE_GUARDED_KEYS = {
+    "ai_proposals": (("proposal_id",), ("artifact_id", "mapping_version")),
+    "ai_proposal_review_revisions": (("review_revision_id",), ("proposal_id", "revision_number")),
+    "ai_proposal_review_decisions": (("decision_id",), ("review_revision_id",)),
+    "human_authorization_grants": (
+        ("grant_id",), ("baec_id",), ("supersedes_grant_id",), ("review_revision_id", "action", "issue_sequence"),
+    ),
+    "human_authorization_grant_supersessions": (("grant_id",),),
+    "ai_proposal_confirmations": (
+        ("baec_id",), ("artifact_id",), ("proposal_id",), ("review_revision_id",), ("grant_id",), ("authorization_id",),
+    ),
+    "human_authorization_grant_consumptions": (("grant_id",), ("baec_id",)),
+}
+
+# Fixed Phase 7 version labels and vocabularies (design §6, §11-§13). IMPLEMENTATION
+# identifiers, never research claims. The mapping-v1 validator allowlist is an
+# implementation compatibility allowlist, not a BAEC research proposition.
+BRIDGE_PROPOSAL_ORIGIN = "AI_DRAFT"
+BRIDGE_MAPPING_VERSION = "baec-ai-proposal-mapping/v1"
+BRIDGE_PROPOSAL_CONTENT_VERSION = "baec-ai-proposal-content/v1"
+BRIDGE_REVIEW_CONTENT_VERSION = "baec-ai-review-content/v1"
+BRIDGE_NORMALIZATION_VALIDATION_VERSION = "baec-human-normalization-validation/v1"
+BRIDGE_ELIGIBLE_VALIDATION_VERSION = "baec-extraction-validation/v2"
+BRIDGE_DECISIONS = ("ACCEPTED", "REJECTED")
+BRIDGE_GRANT_FORMAT = "baec-human-grant/v1"
+BRIDGE_GRANT_ACTION = AuthorizationAction.CONFIRM_BAEC.value
+BRIDGE_GRANT_ISSUING_SURFACE = "streamlit-review/v1"
+BRIDGE_GRANT_EXECUTOR_SURFACE = "mcp-write/confirm_baec/v1"
+BRIDGE_GRANT_TTL_SECONDS = 900  # 15 minutes: an IMPLEMENTATION setting, not a research finding
+BRIDGE_SUPERSESSION_REASONS = ("REVISION_SUPERSEDED", "PROPOSAL_REJECTED")
 
 # Terminal AI run vocabulary (Phase 6 design §11). Lowercase machine tokens.
 AI_RUN_STATUSES = (
@@ -292,6 +343,12 @@ def _state_evidence_table(name: str, key: str) -> str:
 
 
 def _schema_statements() -> list[str]:
+    """Every statement of the current schema: version 6 unchanged, then the additive version-7 bridge."""
+    return _schema_statements_v6() + _bridge_statements()
+
+
+def _schema_statements_v6() -> list[str]:
+    """The complete version-6 schema, byte-identical to Phase 6. Never edited: version 7 only adds to it."""
     statements = [
         """
     CREATE TABLE schema_meta (
@@ -738,6 +795,408 @@ def _semantic_vocabulary_sql() -> str:
     ) + ")"
 
 
+# --- Phase 7 AI proposal bridge (schema version 7) ---------------------------------
+#
+# docs/PHASE7_HUMAN_AUTHORIZED_AI_PROPOSAL_BRIDGE_DESIGN.md §13. Persistence only:
+# immutable AI_DRAFT proposal snapshots, immutable human review revisions and
+# decisions, and the append-only grant, supersession, confirmation-link, and
+# consumption history used by later increments. Every table is append-only. A
+# grant's status is never a mutable column: it is derived from the rows that
+# reference it. No trigger or index here reads the current time.
+
+
+def _bridge_statements() -> list[str]:
+    """The version-7 additions, in order: tables, indexes, guards, then integrity triggers."""
+    statements = _bridge_tables() + _bridge_indexes()
+    for table in BRIDGE_APPEND_ONLY_TABLES:
+        for operation in ("UPDATE", "DELETE"):
+            statements.append(
+                f"""
+    CREATE TRIGGER {table}_no_{operation.lower()}
+    BEFORE {operation} ON {table}
+    BEGIN
+        SELECT RAISE(ABORT, '{table} is append-only');
+    END"""
+            )
+    for table, keys in BRIDGE_REPLACE_GUARDED_KEYS.items():
+        collisions = [
+            f"EXISTS (SELECT 1 FROM {table} WHERE "
+            + " AND ".join(f"{column} = NEW.{column}" for column in key)
+            + ")"
+            for key in keys
+        ]
+        if table == "ai_proposal_review_decisions":
+            # The partial unique index: a second rejection of one proposal would replace the first.
+            collisions.append(
+                "(NEW.decision = 'REJECTED' AND EXISTS (SELECT 1 FROM ai_proposal_review_decisions "
+                "WHERE proposal_id = NEW.proposal_id AND decision = 'REJECTED'))"
+            )
+        statements.append(
+            f"""
+    CREATE TRIGGER {table}_no_replace
+    BEFORE INSERT ON {table}
+    WHEN {" OR ".join(collisions)}
+    BEGIN
+        SELECT RAISE(ABORT, '{table} rows cannot be replaced');
+    END"""
+        )
+    return statements + _bridge_triggers()
+
+
+def _bridge_tables() -> list[str]:
+    return [
+        f"""
+    CREATE TABLE ai_proposals (
+        proposal_id TEXT PRIMARY KEY CHECK (proposal_id GLOB 'aiprop_?*'),
+        origin TEXT NOT NULL CHECK (origin = '{BRIDGE_PROPOSAL_ORIGIN}'),
+        mapping_version TEXT NOT NULL CHECK (mapping_version = '{BRIDGE_MAPPING_VERSION}'),
+        content_version TEXT NOT NULL CHECK (content_version = '{BRIDGE_PROPOSAL_CONTENT_VERSION}'),
+        artifact_id TEXT NOT NULL,
+        artifact_digest TEXT NOT NULL CHECK {_sha256('artifact_digest')},
+        account_id TEXT NOT NULL,
+        interaction_id TEXT NOT NULL,
+        content TEXT NOT NULL CHECK (json_valid(content) AND json_type(content) = 'object'),
+        proposal_digest TEXT NOT NULL CHECK {_sha256('proposal_digest')},
+        created_by TEXT NOT NULL CHECK (trim(created_by, {_SQL_WHITESPACE}) <> ''),
+        created_at TEXT NOT NULL,
+        -- One proposal per artifact per mapping version.
+        UNIQUE (artifact_id, mapping_version),
+        -- Parent key binding revisions to the proposal's account, source, artifact, and snapshot.
+        UNIQUE (proposal_id, account_id, interaction_id, artifact_id, proposal_digest),
+        FOREIGN KEY (artifact_id, interaction_id)
+            REFERENCES ai_artifacts (artifact_id, interaction_id) ON DELETE RESTRICT,
+        FOREIGN KEY (interaction_id, account_id)
+            REFERENCES interactions (interaction_id, account_id) ON DELETE RESTRICT
+    ) STRICT""",
+        f"""
+    CREATE TABLE ai_proposal_review_revisions (
+        review_revision_id TEXT PRIMARY KEY CHECK (review_revision_id GLOB 'aireview_?*'),
+        proposal_id TEXT NOT NULL,
+        proposal_digest TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        interaction_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        revision_number INTEGER NOT NULL CHECK (revision_number >= 1),
+        previous_revision_id TEXT
+            REFERENCES ai_proposal_review_revisions (review_revision_id) ON DELETE RESTRICT,
+        review_content_version TEXT NOT NULL CHECK (review_content_version = '{BRIDGE_REVIEW_CONTENT_VERSION}'),
+        normalization_validation_version TEXT NOT NULL
+            CHECK (normalization_validation_version = '{BRIDGE_NORMALIZATION_VALIDATION_VERSION}'),
+        content TEXT NOT NULL CHECK (json_valid(content) AND json_type(content) = 'object'),
+        review_content_digest TEXT NOT NULL CHECK {_sha256('review_content_digest')},
+        actor_label TEXT NOT NULL CHECK (trim(actor_label, {_SQL_WHITESPACE}) <> ''),
+        created_at TEXT NOT NULL,
+        CHECK ((revision_number = 1) = (previous_revision_id IS NULL)),
+        UNIQUE (proposal_id, revision_number),
+        UNIQUE (review_revision_id, proposal_id, account_id, interaction_id, artifact_id, review_content_digest),
+        FOREIGN KEY (proposal_id, account_id, interaction_id, artifact_id, proposal_digest)
+            REFERENCES ai_proposals (proposal_id, account_id, interaction_id, artifact_id, proposal_digest)
+            ON DELETE RESTRICT
+    ) STRICT""",
+        f"""
+    CREATE TABLE ai_proposal_review_decisions (
+        decision_id TEXT PRIMARY KEY CHECK (decision_id GLOB 'aidecision_?*'),
+        proposal_id TEXT NOT NULL REFERENCES ai_proposals (proposal_id) ON DELETE RESTRICT,
+        review_revision_id TEXT
+            REFERENCES ai_proposal_review_revisions (review_revision_id) ON DELETE RESTRICT,
+        account_id TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ({_tokens(BRIDGE_DECISIONS)})),
+        actor_label TEXT NOT NULL CHECK (trim(actor_label, {_SQL_WHITESPACE}) <> ''),
+        decided_at TEXT NOT NULL,
+        -- Acceptance is per revision; a rejection is per proposal and may name no revision.
+        CHECK (decision <> 'ACCEPTED' OR review_revision_id IS NOT NULL),
+        UNIQUE (review_revision_id),
+        UNIQUE (decision_id, review_revision_id)
+    ) STRICT""",
+        f"""
+    CREATE TABLE human_authorization_grants (
+        grant_id TEXT PRIMARY KEY
+            CHECK (grant_id GLOB 'grant_*' AND length(grant_id) = 70 AND substr(grant_id, 7) NOT GLOB '*[^0-9a-f]*'),
+        grant_format TEXT NOT NULL CHECK (grant_format = '{BRIDGE_GRANT_FORMAT}'),
+        action TEXT NOT NULL CHECK (action = '{BRIDGE_GRANT_ACTION}'),
+        issuing_surface TEXT NOT NULL CHECK (issuing_surface = '{BRIDGE_GRANT_ISSUING_SURFACE}'),
+        account_id TEXT NOT NULL,
+        interaction_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        proposal_id TEXT NOT NULL,
+        proposal_digest TEXT NOT NULL,
+        review_revision_id TEXT NOT NULL,
+        review_content_digest TEXT NOT NULL,
+        decision_id TEXT NOT NULL,
+        issue_sequence INTEGER NOT NULL CHECK (issue_sequence >= 1),
+        supersedes_grant_id TEXT UNIQUE REFERENCES human_authorization_grants (grant_id) ON DELETE RESTRICT,
+        baec_id TEXT NOT NULL UNIQUE CHECK (baec_id GLOB 'BAEC-?*'),
+        actor_label TEXT NOT NULL CHECK (trim(actor_label, {_SQL_WHITESPACE}) <> ''),
+        issued_at TEXT NOT NULL,
+        ttl_seconds INTEGER NOT NULL CHECK (ttl_seconds = {BRIDGE_GRANT_TTL_SECONDS}),
+        expires_at TEXT NOT NULL,
+        grant_digest TEXT NOT NULL CHECK {_sha256('grant_digest')},
+        CHECK ((issue_sequence = 1) = (supersedes_grant_id IS NULL)),
+        -- Defense in depth; the application verifies the exact 15-minute equality.
+        CHECK (COALESCE(abs((julianday(expires_at) - julianday(issued_at)) * 86400.0 - {BRIDGE_GRANT_TTL_SECONDS}.0) < 0.001, 0)),
+        UNIQUE (review_revision_id, action, issue_sequence),
+        UNIQUE (grant_id, baec_id, account_id, interaction_id, artifact_id, proposal_id, review_revision_id),
+        FOREIGN KEY (review_revision_id, proposal_id, account_id, interaction_id, artifact_id, review_content_digest)
+            REFERENCES ai_proposal_review_revisions
+                (review_revision_id, proposal_id, account_id, interaction_id, artifact_id, review_content_digest)
+            ON DELETE RESTRICT,
+        FOREIGN KEY (decision_id, review_revision_id)
+            REFERENCES ai_proposal_review_decisions (decision_id, review_revision_id) ON DELETE RESTRICT
+    ) STRICT""",
+        f"""
+    CREATE TABLE human_authorization_grant_supersessions (
+        grant_id TEXT PRIMARY KEY REFERENCES human_authorization_grants (grant_id) ON DELETE RESTRICT,
+        reason TEXT NOT NULL CHECK (reason IN ({_tokens(BRIDGE_SUPERSESSION_REASONS)})),
+        superseding_revision_id TEXT
+            REFERENCES ai_proposal_review_revisions (review_revision_id) ON DELETE RESTRICT,
+        rejection_decision_id TEXT
+            REFERENCES ai_proposal_review_decisions (decision_id) ON DELETE RESTRICT,
+        actor_label TEXT NOT NULL CHECK (trim(actor_label, {_SQL_WHITESPACE}) <> ''),
+        superseded_at TEXT NOT NULL,
+        CHECK ((reason = 'REVISION_SUPERSEDED') = (superseding_revision_id IS NOT NULL)),
+        CHECK ((reason = 'PROPOSAL_REJECTED') = (rejection_decision_id IS NOT NULL))
+    ) STRICT""",
+        """
+    CREATE TABLE ai_proposal_confirmations (
+        baec_id TEXT PRIMARY KEY,
+        -- One confirmed BAEC per AI lineage (design D8).
+        artifact_id TEXT NOT NULL UNIQUE,
+        proposal_id TEXT NOT NULL UNIQUE,
+        review_revision_id TEXT NOT NULL UNIQUE,
+        grant_id TEXT NOT NULL UNIQUE,
+        authorization_id INTEGER NOT NULL UNIQUE
+            REFERENCES human_authorizations (authorization_id) ON DELETE RESTRICT,
+        account_id TEXT NOT NULL,
+        interaction_id TEXT NOT NULL,
+        FOREIGN KEY (baec_id, account_id) REFERENCES baec_records (baec_id, account_id) ON DELETE RESTRICT,
+        FOREIGN KEY (baec_id, interaction_id)
+            REFERENCES baec_records (baec_id, source_interaction_id) ON DELETE RESTRICT,
+        FOREIGN KEY (grant_id, baec_id, account_id, interaction_id, artifact_id, proposal_id, review_revision_id)
+            REFERENCES human_authorization_grants
+                (grant_id, baec_id, account_id, interaction_id, artifact_id, proposal_id, review_revision_id)
+            ON DELETE RESTRICT
+    ) STRICT""",
+        f"""
+    CREATE TABLE human_authorization_grant_consumptions (
+        grant_id TEXT PRIMARY KEY,
+        baec_id TEXT NOT NULL UNIQUE,
+        executor_surface TEXT NOT NULL CHECK (executor_surface = '{BRIDGE_GRANT_EXECUTOR_SURFACE}'),
+        consumed_at TEXT NOT NULL,
+        FOREIGN KEY (baec_id) REFERENCES ai_proposal_confirmations (baec_id) ON DELETE RESTRICT,
+        FOREIGN KEY (grant_id) REFERENCES ai_proposal_confirmations (grant_id) ON DELETE RESTRICT
+    ) STRICT""",
+    ]
+
+
+def _bridge_indexes() -> list[str]:
+    return [
+        "CREATE INDEX ai_proposals_account ON ai_proposals (account_id)",
+        "CREATE INDEX human_authorization_grants_proposal ON human_authorization_grants (proposal_id)",
+        "CREATE INDEX ai_proposal_confirmations_account ON ai_proposal_confirmations (account_id)",
+        # A rejection is terminal and happens at most once per proposal.
+        "CREATE UNIQUE INDEX ai_proposal_review_decisions_one_rejection "
+        "ON ai_proposal_review_decisions (proposal_id) WHERE decision = 'REJECTED'",
+    ]
+
+
+def _unretired(grant: str) -> str:
+    """SQL: the grant aliased `grant` is neither consumed nor superseded (by a record or a successor grant)."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM human_authorization_grant_consumptions WHERE grant_id = {grant}.grant_id) "
+        f"AND NOT EXISTS (SELECT 1 FROM human_authorization_grant_supersessions WHERE grant_id = {grant}.grant_id) "
+        f"AND NOT EXISTS (SELECT 1 FROM human_authorization_grants WHERE supersedes_grant_id = {grant}.grant_id)"
+    )
+
+
+def _latest_revision(proposal: str) -> str:
+    """SQL: the id of the highest-numbered revision of the given proposal, or NULL."""
+    return (
+        "(SELECT review_revision_id FROM ai_proposal_review_revisions "
+        f"WHERE proposal_id = {proposal} ORDER BY revision_number DESC LIMIT 1)"
+    )
+
+
+def _rejected(proposal: str) -> str:
+    return (f"EXISTS (SELECT 1 FROM ai_proposal_review_decisions "
+            f"WHERE proposal_id = {proposal} AND decision = 'REJECTED')")
+
+
+def _confirmed(proposal: str) -> str:
+    return f"EXISTS (SELECT 1 FROM ai_proposal_confirmations WHERE proposal_id = {proposal})"
+
+
+def _bridge_triggers() -> list[str]:
+    def trigger(name: str, timing: str, table: str, when: str, body: str) -> str:
+        return f"""
+    CREATE TRIGGER {name}
+    {timing} INSERT ON {table}
+    WHEN {when}
+    BEGIN
+        {body}
+    END"""
+
+    def refuse(name: str, table: str, when: str, message: str) -> str:
+        return trigger(name, "BEFORE", table, when, f"SELECT RAISE(ABORT, '{message}');")
+
+    return [
+        # A proposal snapshots exactly one stored, successful artifact of its own account,
+        # validated under the mapping-v1 compatibility allowlist.
+        refuse("ai_proposals_artifact_binding", "ai_proposals", f"""NOT EXISTS (
+        SELECT 1 FROM ai_artifacts AS artifact
+        JOIN ai_run_results AS result ON result.ai_run_id = artifact.ai_run_id
+        JOIN ai_runs AS run ON run.ai_run_id = artifact.ai_run_id
+        WHERE artifact.artifact_id = NEW.artifact_id
+            AND artifact.artifact_digest = NEW.artifact_digest
+            AND artifact.account_id = NEW.account_id
+            AND artifact.interaction_id = NEW.interaction_id
+            AND result.status = 'success'
+            AND run.validation_version = '{BRIDGE_ELIGIBLE_VALIDATION_VERSION}'
+    )""", "ai_proposals must snapshot a successful, eligible artifact of the same account and interaction"),
+        # Revisions form one gap-free chain per proposal: n follows exactly the latest n-1.
+        refuse("ai_proposal_review_revisions_sequence", "ai_proposal_review_revisions", f"""
+        NEW.revision_number IS NOT 1 + COALESCE(
+            (SELECT MAX(revision_number) FROM ai_proposal_review_revisions WHERE proposal_id = NEW.proposal_id), 0)
+        OR NEW.previous_revision_id IS NOT {_latest_revision("NEW.proposal_id")}""",
+               "ai_proposal_review_revisions must extend the latest revision of the proposal"),
+        refuse("ai_proposal_review_revisions_open", "ai_proposal_review_revisions",
+               f"{_rejected('NEW.proposal_id')} OR {_confirmed('NEW.proposal_id')}",
+               "ai_proposal_review_revisions cannot extend a rejected or confirmed proposal"),
+        # A new revision supersedes every unretired grant of the proposal, in the same statement.
+        trigger("ai_proposal_review_revisions_supersede_grants", "AFTER", "ai_proposal_review_revisions", "1",
+                f"""INSERT INTO human_authorization_grant_supersessions
+            (grant_id, reason, superseding_revision_id, rejection_decision_id, actor_label, superseded_at)
+        SELECT grant_row.grant_id, 'REVISION_SUPERSEDED', NEW.review_revision_id, NULL,
+               NEW.actor_label, NEW.created_at
+        FROM human_authorization_grants AS grant_row
+        WHERE grant_row.proposal_id = NEW.proposal_id AND {_unretired("grant_row")};"""),
+        refuse("ai_proposal_review_decisions_binding", "ai_proposal_review_decisions", """
+        NOT EXISTS (SELECT 1 FROM ai_proposals WHERE proposal_id = NEW.proposal_id AND account_id = NEW.account_id)
+        OR (NEW.review_revision_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM ai_proposal_review_revisions
+            WHERE review_revision_id = NEW.review_revision_id
+                AND proposal_id = NEW.proposal_id AND account_id = NEW.account_id))""",
+               "ai_proposal_review_decisions must name its own proposal, revision, and account"),
+        refuse("ai_proposal_review_decisions_latest", "ai_proposal_review_decisions",
+               f"NEW.decision = 'ACCEPTED' AND NEW.review_revision_id IS NOT {_latest_revision('NEW.proposal_id')}",
+               "ai_proposal_review_decisions can accept only the latest revision"),
+        refuse("ai_proposal_review_decisions_terminal", "ai_proposal_review_decisions",
+               f"{_rejected('NEW.proposal_id')} OR {_confirmed('NEW.proposal_id')}",
+               "ai_proposal_review_decisions cannot follow a rejection or a confirmation"),
+        # A rejection supersedes every unretired grant of the proposal, in the same statement.
+        trigger("ai_proposal_review_decisions_reject_supersedes", "AFTER", "ai_proposal_review_decisions",
+                "NEW.decision = 'REJECTED'",
+                f"""INSERT INTO human_authorization_grant_supersessions
+            (grant_id, reason, superseding_revision_id, rejection_decision_id, actor_label, superseded_at)
+        SELECT grant_row.grant_id, 'PROPOSAL_REJECTED', NULL, NEW.decision_id, NEW.actor_label, NEW.decided_at
+        FROM human_authorization_grants AS grant_row
+        WHERE grant_row.proposal_id = NEW.proposal_id AND {_unretired("grant_row")};"""),
+        refuse("human_authorization_grants_accepted", "human_authorization_grants", f"""
+        NOT EXISTS (
+            SELECT 1 FROM ai_proposal_review_decisions
+            WHERE decision_id = NEW.decision_id AND review_revision_id = NEW.review_revision_id
+                AND proposal_id = NEW.proposal_id AND decision = 'ACCEPTED')
+        OR NEW.review_revision_id IS NOT {_latest_revision("NEW.proposal_id")}
+        OR {_rejected("NEW.proposal_id")} OR {_confirmed("NEW.proposal_id")}""",
+               "human_authorization_grants requires an accepted latest revision of an open proposal"),
+        refuse("human_authorization_grants_proposal_digest", "human_authorization_grants",
+               "NEW.proposal_digest IS NOT (SELECT proposal_digest FROM ai_proposals WHERE proposal_id = NEW.proposal_id)",
+               "human_authorization_grants proposal_digest disagrees with its proposal"),
+        # At most one unretired grant per (revision, action); a re-issue names exactly its predecessor.
+        refuse("human_authorization_grants_one_unretired", "human_authorization_grants", f"""
+        EXISTS (
+            SELECT 1 FROM human_authorization_grants AS grant_row
+            WHERE grant_row.review_revision_id = NEW.review_revision_id AND grant_row.action = NEW.action
+                AND grant_row.grant_id IS NOT NEW.supersedes_grant_id AND {_unretired("grant_row")})
+        OR (NEW.supersedes_grant_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM human_authorization_grants AS grant_row
+            WHERE grant_row.grant_id = NEW.supersedes_grant_id
+                AND grant_row.review_revision_id = NEW.review_revision_id AND grant_row.action = NEW.action
+                AND grant_row.issue_sequence = NEW.issue_sequence - 1 AND {_unretired("grant_row")}))""",
+               "human_authorization_grants allows one unretired grant per revision and action"),
+        refuse("human_authorization_grant_supersessions_binding", "human_authorization_grant_supersessions", f"""
+        NOT EXISTS (
+            SELECT 1 FROM human_authorization_grants AS grant_row
+            WHERE grant_row.grant_id = NEW.grant_id AND {_unretired("grant_row")}
+                AND (
+                    (NEW.reason = 'REVISION_SUPERSEDED' AND EXISTS (
+                        SELECT 1 FROM ai_proposal_review_revisions AS later
+                        JOIN ai_proposal_review_revisions AS granted
+                            ON granted.review_revision_id = grant_row.review_revision_id
+                        WHERE later.review_revision_id = NEW.superseding_revision_id
+                            AND later.proposal_id = grant_row.proposal_id
+                            AND later.revision_number > granted.revision_number))
+                    OR (NEW.reason = 'PROPOSAL_REJECTED' AND EXISTS (
+                        SELECT 1 FROM ai_proposal_review_decisions
+                        WHERE decision_id = NEW.rejection_decision_id
+                            AND proposal_id = grant_row.proposal_id AND decision = 'REJECTED'))))""",
+               "human_authorization_grant_supersessions must retire an unretired grant by a later revision or a rejection of its proposal"),
+        refuse("ai_proposal_confirmations_authorization_binding", "ai_proposal_confirmations", """
+        NOT EXISTS (
+            SELECT 1 FROM baec_records AS record
+            JOIN human_authorizations AS authorization
+                ON authorization.authorization_id = record.confirmation_authorization_id
+            JOIN human_authorization_grants AS grant_row ON grant_row.grant_id = NEW.grant_id
+            WHERE record.baec_id = NEW.baec_id
+                AND authorization.authorization_id = NEW.authorization_id
+                AND authorization.action = 'CONFIRM_BAEC'
+                AND authorization.subject_id = NEW.baec_id
+                AND authorization.target_state IS NULL
+                AND authorization.authorized_by = grant_row.actor_label
+                AND authorization.authorized_at = grant_row.issued_at)""",
+               "ai_proposal_confirmations requires the BAEC confirmation authorization derived from its grant"),
+        refuse("ai_proposal_confirmations_unretired", "ai_proposal_confirmations", f"""
+        NOT EXISTS (
+            SELECT 1 FROM human_authorization_grants AS grant_row
+            WHERE grant_row.grant_id = NEW.grant_id AND {_unretired("grant_row")})
+        OR NEW.review_revision_id IS NOT {_latest_revision("NEW.proposal_id")}
+        OR {_rejected("NEW.proposal_id")}""",
+               "ai_proposal_confirmations requires an unretired grant on the latest revision of an open proposal"),
+        refuse("ai_proposal_confirmations_classification", "ai_proposal_confirmations", """
+        NOT EXISTS (
+            SELECT 1 FROM baec_records
+            WHERE baec_id = NEW.baec_id AND classification = 'CONFIRMED_BAEC' AND staleness_status = 'CURRENT')""",
+               "ai_proposal_confirmations requires a CURRENT confirmed BAEC"),
+        # Compares two stored values; never the current time.
+        refuse("human_authorization_grant_consumptions_window", "human_authorization_grant_consumptions", """
+        NOT COALESCE((
+            SELECT julianday(grant_row.issued_at) <= julianday(NEW.consumed_at)
+                AND julianday(NEW.consumed_at) < julianday(grant_row.expires_at)
+            FROM human_authorization_grants AS grant_row WHERE grant_row.grant_id = NEW.grant_id), 0)""",
+               "human_authorization_grant_consumptions must fall inside the grant validity window"),
+        refuse("human_authorization_grant_consumptions_pairing", "human_authorization_grant_consumptions", """
+        NOT EXISTS (
+            SELECT 1 FROM ai_proposal_confirmations WHERE baec_id = NEW.baec_id AND grant_id = NEW.grant_id)""",
+               "human_authorization_grant_consumptions must pair with its confirmation link"),
+    ]
+
+
+BRIDGE_INTEGRITY_TRIGGERS = (
+    "ai_proposals_artifact_binding",
+    "ai_proposal_review_revisions_sequence",
+    "ai_proposal_review_revisions_open",
+    "ai_proposal_review_revisions_supersede_grants",
+    "ai_proposal_review_decisions_binding",
+    "ai_proposal_review_decisions_latest",
+    "ai_proposal_review_decisions_terminal",
+    "ai_proposal_review_decisions_reject_supersedes",
+    "human_authorization_grants_accepted",
+    "human_authorization_grants_proposal_digest",
+    "human_authorization_grants_one_unretired",
+    "human_authorization_grant_supersessions_binding",
+    "ai_proposal_confirmations_authorization_binding",
+    "ai_proposal_confirmations_unretired",
+    "ai_proposal_confirmations_classification",
+    "human_authorization_grant_consumptions_window",
+    "human_authorization_grant_consumptions_pairing",
+)
+BRIDGE_INDEXES = (
+    "ai_proposals_account",
+    "human_authorization_grants_proposal",
+    "ai_proposal_confirmations_account",
+    "ai_proposal_review_decisions_one_rejection",
+)
+
+
 def check_sqlite_version(version_info: tuple[int, ...] | None = None) -> None:
     """Refuse to run on an SQLite too old for STRICT tables and built-in JSON functions."""
     found = sqlite3.sqlite_version_info if version_info is None else version_info
@@ -793,10 +1252,52 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 def require_current_schema(connection: sqlite3.Connection) -> None:
     found = schema_version(connection)
     if found != SCHEMA_VERSION:
+        upgrade = " A version-6 file can instead be upgraded with migrate_v6_to_v7()." if found == 6 else ""
         raise DatabaseVersionError(
             f"database schema version is {found}, expected {SCHEMA_VERSION}. "
-            "V0.1 data is synthetic: rebuild the database from the seed files."
+            "V0.1 data is synthetic: rebuild the database from the seed files." + upgrade
         )
+
+
+def _schema_objects(connection: sqlite3.Connection) -> set[tuple]:
+    """Every user schema object (type, name, table, SQL text); SQLite's automatic indexes excluded."""
+    return set(connection.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+    ).fetchall())
+
+
+def _reference_v6_objects() -> set[tuple]:
+    reference = _raw_connect(":memory:")
+    try:
+        for statement in _schema_statements_v6():
+            reference.execute(statement)
+        return _schema_objects(reference)
+    finally:
+        reference.close()
+
+
+def migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
+    """Upgrade a schema-version-6 database to version 7 in place.
+
+    Purely additive: it creates the seven Phase 7 bridge tables with their
+    indexes and triggers and sets the version. No existing table, row, index,
+    or trigger is touched. The database must hold exactly the version-6 schema
+    this module defines; anything else (another version, a missing or altered
+    object, a bridge table already present) is refused with nothing changed.
+    Everything runs in one immediate transaction: all of it, or none of it.
+    """
+    check_sqlite_version()
+    found = schema_version(connection)
+    if found != 6:
+        raise DatabaseVersionError(f"only a schema-version-6 database can be upgraded to 7; found {found}")
+    if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        raise PersistenceError("migrate_v6_to_v7 requires foreign key enforcement")
+    if _schema_objects(connection) != _reference_v6_objects():
+        raise DatabaseVersionError("the database does not hold exactly the version-6 schema; refusing to upgrade")
+    with transaction(connection):
+        for statement in _bridge_statements():
+            connection.execute(statement)
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def open_database(path: str = ":memory:") -> sqlite3.Connection:

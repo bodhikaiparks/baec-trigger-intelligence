@@ -1,8 +1,13 @@
 """Proposal origins and proposal objects.
 
-Phase 4 has exactly two origins. AI_MODEL is deliberately absent: model or
-MCP proposal ingestion may not be enabled until persistent AI-origin
-provenance is designed and implemented (design §18).
+Phase 4 defined two origins, HUMAN_DRAFT and DETERMINISTIC. Phase 7C adds
+AI_DRAFT, now that persistent AI-origin provenance exists (Phase 4 design
+§18; docs/PHASE7_HUMAN_AUTHORIZED_AI_PROPOSAL_BRIDGE_DESIGN.md §6.4).
+AI_DRAFT means model-derived draft content that requires human review. It
+never means model-authorized or model-confirmed. An AI_DRAFT exists only as
+a persisted ai_proposals row: no Phase 4 proposal object may carry it, and
+the Phase 4 in-memory request path refuses it (AiDraftNotPermitted).
+AI_MODEL is deliberately absent.
 
 A proposal grants nothing. It reaches the command side only when the UI
 turns it into a request (HumanCommandFacade.request_from_proposal), and that
@@ -18,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-from baec_app.application.errors import ApplicationValidationError
+from baec_app.application.errors import AiDraftNotPermitted, ApplicationValidationError
 from baec_app.domain.enums import NoPlausiblePathGround, ReviewAnswer
 from baec_app.domain.models import BaecCandidate, EvaluationEvidence, NonEvaluationEvidence
 
@@ -26,6 +31,16 @@ from baec_app.domain.models import BaecCandidate, EvaluationEvidence, NonEvaluat
 class ProposalOrigin(Enum):
     HUMAN_DRAFT = "HUMAN_DRAFT"  # values entered by a human through the UI
     DETERMINISTIC = "DETERMINISTIC"  # produced by deterministic application code
+    AI_DRAFT = "AI_DRAFT"  # model-derived draft for persisted human review; never authority (Phase 7)
+
+
+def require_phase4_origin(origin: object, field: str) -> None:
+    """Refuse AI_DRAFT on the Phase 4 in-memory path; other values are checked by their callers."""
+    if origin is ProposalOrigin.AI_DRAFT:
+        raise AiDraftNotPermitted(
+            f"{field} is AI_DRAFT: AI drafts go through the persisted Phase 7 review and grant, "
+            "never through a Phase 4 proposal, request, or approval"
+        )
 
 
 def _text(value: object, field: str) -> None:
@@ -63,6 +78,7 @@ class ConfirmationProposal:
         _exact(self.candidate, BaecCandidate, "ConfirmationProposal.candidate")
         _aware(self.captured_at, "ConfirmationProposal.captured_at")
         _exact(self.origin, ProposalOrigin, "ConfirmationProposal.origin")
+        require_phase4_origin(self.origin, "ConfirmationProposal.origin")
 
 
 @dataclass(frozen=True)
@@ -79,6 +95,7 @@ class DormancyJudgmentProposal:
         _exact(self.addressability, ReviewAnswer, "DormancyJudgmentProposal.addressability")
         _optional_text(self.notes, "DormancyJudgmentProposal.notes")
         _exact(self.origin, ProposalOrigin, "DormancyJudgmentProposal.origin")
+        require_phase4_origin(self.origin, "DormancyJudgmentProposal.origin")
 
 
 @dataclass(frozen=True)
@@ -95,6 +112,7 @@ class MoveToDormantProposal:
         _exact(self.judgment_id, int, "MoveToDormantProposal.judgment_id")
         _optional_exact(self.non_evaluation_evidence, NonEvaluationEvidence, "MoveToDormantProposal.non_evaluation_evidence")
         _exact(self.origin, ProposalOrigin, "MoveToDormantProposal.origin")
+        require_phase4_origin(self.origin, "MoveToDormantProposal.origin")
 
 
 @dataclass(frozen=True)
@@ -107,6 +125,7 @@ class MoveToActiveProposal:
         _text(self.account_id, "MoveToActiveProposal.account_id")
         _exact(self.evaluation_evidence, EvaluationEvidence, "MoveToActiveProposal.evaluation_evidence")
         _exact(self.origin, ProposalOrigin, "MoveToActiveProposal.origin")
+        require_phase4_origin(self.origin, "MoveToActiveProposal.origin")
 
 
 @dataclass(frozen=True)
@@ -128,6 +147,7 @@ class MoveToNoPlausiblePathProposal:
         )
         _optional_text(self.basis_interaction_id, "MoveToNoPlausiblePathProposal.basis_interaction_id")
         _exact(self.origin, ProposalOrigin, "MoveToNoPlausiblePathProposal.origin")
+        require_phase4_origin(self.origin, "MoveToNoPlausiblePathProposal.origin")
 
 
 PROPOSAL_TYPES = (

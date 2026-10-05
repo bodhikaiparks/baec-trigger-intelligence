@@ -280,7 +280,7 @@ def test_the_evaluation_database_holds_only_the_fixtures_with_empty_ai_tables(tm
     harness.build_evaluation_database(path, corpus)
     connection = connect(str(path))
     try:
-        assert schema_version(connection) == 6
+        assert schema_version(connection) == 7  # 6 until Phase 7C
         assert connection.execute("SELECT account_id FROM accounts ORDER BY rowid").fetchall() == [
             (c.account_id,) for c in corpus.cases]
         assert connection.execute("SELECT text FROM interactions ORDER BY rowid").fetchall() == [

@@ -11,6 +11,10 @@ from baec_app.data.database import (
     AI_REPLACE_GUARDED_KEYS,
     ALL_TABLES,
     APPEND_ONLY_TABLES,
+    BRIDGE_APPEND_ONLY_TABLES,
+    BRIDGE_INTEGRITY_TRIGGERS,
+    BRIDGE_REPLACE_GUARDED_KEYS,
+    BRIDGE_TABLES,
     REPLACE_GUARDED_KEYS,
     DatabaseVersionError,
     connect,
@@ -34,6 +38,12 @@ AI_TRIGGERS = (
        "ai_artifacts_require_success", "ai_artifact_excerpts_verbatim"]
     # Schema version 6 (Phase 6D-B1): the closed failure-code backstop.
     + ["ai_run_results_failure_codes_closed"]
+)
+# Schema version 7 (Phase 7C): the bridge tables' append-only, replace, and integrity triggers.
+BRIDGE_TRIGGERS = (
+    [f"{table}_no_{op}" for table in BRIDGE_APPEND_ONLY_TABLES for op in ("update", "delete")]
+    + [f"{table}_no_replace" for table in BRIDGE_REPLACE_GUARDED_KEYS]
+    + list(BRIDGE_INTEGRITY_TRIGGERS)
 )
 
 
@@ -59,7 +69,8 @@ def test_foreign_keys_are_enforced_on_every_connection(connection):
 
 
 def test_schema_has_exactly_the_thirteen_approved_tables(connection):
-    """The thirteen Phase 3 tables plus, since schema version 5, the five AI provenance tables (name kept for ID continuity)."""
+    """The thirteen Phase 3 tables plus, since schema version 5, the five AI provenance tables and, since schema
+    version 7, the seven Phase 7 bridge tables (name kept for ID continuity)."""
     names = [
         row[0]
         for row in connection.execute(
@@ -67,7 +78,7 @@ def test_schema_has_exactly_the_thirteen_approved_tables(connection):
         )
     ]
     assert sorted(names) == sorted(ALL_TABLES)
-    assert len(names) == 13 + len(AI_PROVENANCE_TABLES) == 18
+    assert len(names) == 13 + len(AI_PROVENANCE_TABLES) + len(BRIDGE_TABLES) == 25
 
 
 def test_every_table_is_strict(connection):
@@ -83,6 +94,7 @@ def test_append_only_triggers_cover_exactly_the_approved_tables(connection):
         + ["baec_records_protected_no_update", "baec_records_no_delete"]
         + ["interaction_evidence_verbatim"]
         + AI_TRIGGERS
+        + BRIDGE_TRIGGERS
     )
     assert triggers == expected
     assert len(APPEND_ONLY_TABLES) == 10
@@ -138,7 +150,7 @@ def test_strict_tables_refuse_a_value_of_the_wrong_storage_type(connection):
 
 
 def test_schema_version_is_set_and_a_mismatch_is_refused(connection):
-    assert schema_version(connection) == database.SCHEMA_VERSION == 6
+    assert schema_version(connection) == database.SCHEMA_VERSION == 7
     require_current_schema(connection)
     connection.execute("PRAGMA user_version = 99")
     with pytest.raises(DatabaseVersionError):
@@ -148,7 +160,7 @@ def test_schema_version_is_set_and_a_mismatch_is_refused(connection):
 def test_opening_a_database_file_with_another_schema_version_is_refused(tmp_path):
     path = str(tmp_path / "old.sqlite3")
     first = open_database(path)
-    first.execute("PRAGMA user_version = 7")
+    first.execute("PRAGMA user_version = 8")  # 7 until Phase 7C made 7 current
     first.close()
     with pytest.raises(DatabaseVersionError):
         open_database(path)
@@ -220,13 +232,13 @@ def test_working_copy_is_complete_independent_and_writable(connection):
     make_read_only(connection)
     copy = create_working_copy(connection)
     try:
-        assert schema_version(copy) == 6
+        assert schema_version(copy) == 7
         assert copy.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         copy.execute("INSERT INTO accounts (account_id, name) VALUES ('B', 'Synthetic')")
         assert copy.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
         triggers = copy.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'").fetchone()[0]
-        assert triggers == 34 + len(AI_TRIGGERS) == 54
+        assert triggers == 34 + len(AI_TRIGGERS) + len(BRIDGE_TRIGGERS) == 92
     finally:
         copy.close()
 

@@ -1,4 +1,5 @@
-"""Phase 6B: the five AI provenance tables, checked at the SQLite level (schema version 6 since Phase 6D-B1)."""
+"""Phase 6B: the five AI provenance tables, checked at the SQLite level (introduced in schema versions 5 and 6;
+the current repository schema is version 7, which left them unchanged)."""
 
 import ast
 import hashlib
@@ -18,6 +19,7 @@ from baec_app.data.database import (
     AI_RUN_STATUSES,
     AI_SPEAKER_LABELS,
     ALL_TABLES,
+    BRIDGE_TABLES,
     SCHEMA_VERSION,
     DatabaseVersionError,
     open_database,
@@ -46,12 +48,13 @@ def _tables(connection):
 
 
 def test_a_new_database_is_schema_version_5_with_exactly_the_previous_tables_plus_five():
-    """Schema version 6 since Phase 6D-B1 (name kept for ID continuity); no table was added."""
+    """Schema version 6 since Phase 6D-B1, and 7 since Phase 7C, which added only the seven bridge tables
+    (name kept for ID continuity)."""
     connection = open_database()
     try:
-        assert SCHEMA_VERSION == schema_version(connection) == 6
+        assert SCHEMA_VERSION == schema_version(connection) == 7
         assert AI_PROVENANCE_TABLES == AI_TABLES
-        assert _tables(connection) == set(PHASE3_TABLES) | set(AI_TABLES) == set(ALL_TABLES)
+        assert _tables(connection) == set(PHASE3_TABLES) | set(AI_TABLES) | set(BRIDGE_TABLES) == set(ALL_TABLES)
         strict = {row[1]: row[5] for row in connection.execute("PRAGMA table_list") if row[1] in AI_TABLES}
         assert strict == {table: 1 for table in AI_TABLES}
         AiProvenanceStore(connection)  # opens normally
@@ -102,11 +105,11 @@ def test_the_store_refuses_a_connection_at_another_schema_version_or_without_for
 
 
 def test_the_canonical_seed_is_schema_v5_with_empty_ai_tables_and_unchanged_demo_data():
-    """Schema version 6 since Phase 6D-B1 (name kept for ID continuity)."""
+    """Schema version 6 since Phase 6D-B1, and 7 since Phase 7C (name kept for ID continuity)."""
     canonical = build_canonical_seed_database()
     built = build_seed_database()
     try:
-        assert schema_version(canonical) == 6
+        assert schema_version(canonical) == 7
         counts = table_counts(canonical)
         assert {table: counts[table] for table in AI_TABLES} == {table: 0 for table in AI_TABLES}
         states = canonical.execute("SELECT account_id, state FROM accounts ORDER BY rowid").fetchall()

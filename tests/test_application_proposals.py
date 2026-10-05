@@ -185,7 +185,8 @@ def test_subclasses_and_look_alikes_are_refused(case):
 
 
 def test_phase4_origins_are_exactly_two_and_ai_model_is_not_one_of_them():
-    assert [o.name for o in ProposalOrigin] == ["HUMAN_DRAFT", "DETERMINISTIC"]
+    """Phase 7C added exactly AI_DRAFT (name kept for ID continuity); AI_MODEL stays absent."""
+    assert [o.name for o in ProposalOrigin] == ["HUMAN_DRAFT", "DETERMINISTIC", "AI_DRAFT"]
     assert "AI_MODEL" not in ProposalOrigin.__members__
     with pytest.raises(ValueError):
         ProposalOrigin("AI_MODEL")
