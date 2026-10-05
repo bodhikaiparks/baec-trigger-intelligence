@@ -17,13 +17,13 @@ from tests.test_mcp_boundary import _call_name, m2_application_package_api_only
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AI_ROOT = REPO_ROOT / "baec_app" / "ai"
-AI_MODULES = {"baec_app.ai", "baec_app.ai.contracts", "baec_app.ai.canonical", "baec_app.ai.prompts",
+AI_MODULES = {"baec_app.ai", "baec_app.ai.contracts", "baec_app.ai.canonical", "baec_app.ai.prompts", "baec_app.ai.grounding",
               "baec_app.ai.provider", "baec_app.ai.provenance", "baec_app.ai.validation", "baec_app.ai.service",
               "baec_app.ai.anthropic_provider", "baec_app.ai.composition"}
 COMPOSITION = "baec_app.ai.composition"
 PROVIDER = "baec_app.ai.anthropic_provider"
 PURE = {"baec_app.ai.service", "baec_app.ai.provider", "baec_app.ai.validation", "baec_app.ai.contracts",
-        "baec_app.ai.prompts", "baec_app.ai.canonical", "baec_app.ai.provenance"}
+        "baec_app.ai.prompts", "baec_app.ai.canonical", "baec_app.ai.provenance", "baec_app.ai.grounding"}
 
 
 def _modules(root: Path) -> list[tuple[str, str]]:

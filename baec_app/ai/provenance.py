@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Protocol
 
-from baec_app.ai.validation import SEMANTIC_FAILURE_CODES
+from baec_app.ai.validation import SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION, VALIDATION_VERSION
 
 # The service's parse-failure codes: exactly one per parse_failure (Phase 6D design §5.1).
 PARSE_FAILURE_CODES = (
@@ -110,7 +110,8 @@ class TerminalResult:
             if len(codes) != 1 or codes[0] not in PARSE_FAILURE_CODES:
                 raise ValueError("parse_failure requires exactly one parse failure code")
         elif self.status is RunStatus.SEMANTIC_VALIDATION_FAILURE:
-            if not codes or any(code not in SEMANTIC_FAILURE_CODES for code in codes):
+            legal = SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[VALIDATION_VERSION]
+            if not codes or any(code not in legal for code in codes):
                 raise ValueError("semantic_validation_failure requires one or more semantic failure codes")
             if list(codes) != sorted(set(codes)):
                 raise ValueError("failure codes must be sorted and unique")

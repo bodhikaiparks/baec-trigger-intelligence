@@ -1,4 +1,4 @@
-"""Application semantic validation of a parsed extraction (design §8, D8).
+"""Application semantic validation of a parsed extraction (design §8, D8; Phase 6D design §4).
 
 Runs after the strict Pydantic parse. Every rule here is an IMPLEMENTATION CHOICE,
 not a manuscript or Research Contract rule, and none of them is BAEC validation:
@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter
 
 from baec_app.ai.contracts import CRITERIA, BaecExtractionOutput
+from baec_app.ai.grounding import GROUNDING_FAILURE_CODES, grounding_failures
 
 MAX_EXCERPTS = 20
 MAX_EXCERPT_REFS = 20
@@ -18,9 +19,12 @@ MAX_UNCERTAINTIES = 10
 MAX_TEXT_LENGTH = 500  # Unicode code points
 
 # The rules in this module, recorded on every run before the provider attempt
-# (Phase 6D design §6). Prospective from Phase 6D-B1: Phase 6C runs used the same
-# rules as a legacy, pre-versioned validator, and no identifier labels them.
-VALIDATION_VERSION = "baec-extraction-validation/v1"
+# (Phase 6D design §6). /v1 (from Phase 6D-B1) is the D8 rules alone; /v2 (from
+# Phase 6D-B2) adds numeric, numeric-kind, unit, compound, and comparator grounding.
+# Phase 6C runs used the D8 rules as a legacy, pre-versioned validator, and no
+# identifier labels them. An identifier is never reused with another meaning.
+VALIDATION_VERSION_V1 = "baec-extraction-validation/v1"
+VALIDATION_VERSION = "baec-extraction-validation/v2"
 
 SEMANTIC_FAILURE_CODES = (
     "excerpt_id_blank",
@@ -44,6 +48,11 @@ SEMANTIC_FAILURE_CODES = (
     "uncertainty_blank",
     "uncertainty_too_long",
 )
+# The closed semantic vocabulary of each validator version that has ever been recorded.
+SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION = {
+    VALIDATION_VERSION_V1: tuple(sorted(SEMANTIC_FAILURE_CODES)),
+    VALIDATION_VERSION: tuple(sorted(SEMANTIC_FAILURE_CODES + GROUNDING_FAILURE_CODES)),
+}
 
 
 def _blank(text: str) -> bool:
@@ -123,5 +132,13 @@ def validate_extraction(
             codes.add("uncertainty_blank")
         if len(uncertainty) > MAX_TEXT_LENGTH:
             codes.add("uncertainty_too_long")
+
+    # Validation v2 grounding: every model-authored free-text field, against this interaction's text only.
+    # Excerpt text (checked verbatim above), identifiers, and closed enum values are not grounded.
+    fields = [("normalization", text) for text in (output.normalized_condition, output.normalized_evaluation_link)
+              if text is not None]
+    fields += [("explanation", hypothesis.explanation) for hypothesis in hypotheses]
+    fields += [("uncertainty", uncertainty) for uncertainty in output.uncertainties]
+    codes |= grounding_failures(source_text, fields)
 
     return tuple(sorted(codes))

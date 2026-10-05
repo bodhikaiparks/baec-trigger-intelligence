@@ -236,6 +236,19 @@ For each compound token in a guarded field with no exact echo in the source → 
 
 `<field>` is the closed token `normalization` (both normalizations), `explanation`, or `uncertainty`.
 
+> **Phase 6D-B2 clarification (amendment; label: Implementation safeguard).**
+>
+> The generic §4.7 rule that a dropped comparator produces `*_comparator_changed` remains authoritative for classified comparators.
+>
+> For the deliberately unresolved comparator expressions `past`, `beyond`, `within`, and `over`, exact preservation is the only accepted comparator behavior. If a matching source occurrence contains one of these unresolved expressions, then:
+>
+> - exact preservation → allowed;
+> - classified rewrite → `*_comparator_unresolved`;
+> - unresolved-to-unresolved rewrite → `*_comparator_unresolved`;
+> - dropped expression → `*_comparator_unresolved`.
+>
+> No semantic comparator class is assigned to these words. This is a conservative implementation refinement of the locked validation-v2 unresolved-comparator policy (§4.6), not a research claim.
+
 ### 4.8 How a C09-class output is stopped
 
 A model-authored normalization containing a magnitude absent from the source produces `normalization_number_unsupported` in `validate_extraction`. `_conclude` then records `semantic_validation_failure` with the sorted codes and the raw output, and the artifact is never built. This is described generically; the Phase 6C C09 model output is not quoted or reconstructed.

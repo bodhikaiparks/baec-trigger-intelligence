@@ -1,22 +1,24 @@
 """Phase 6D-B1: schema v6, validator provenance, and the closed failure-code contract.
 
 docs/PHASE6D_AI_BEHAVIOR_HARDENING_DESIGN.md §5-§6. Every rule here is an implementation
-safeguard, not a research finding. The 18 validation-v2 grounding codes are reserved for
-6D-B2: they are spelled out below only to prove that no layer accepts them yet.
+safeguard, not a research finding. Since Phase 6D-B2 the current validator is /v2, whose
+vocabulary adds the 18 grounding codes; they remain illegal for any run recorded as /v1.
 """
 
-import inspect
 import sqlite3
 from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
-from baec_app.ai import validation
 from baec_app.ai.composition import _DataLayerProvenanceStore, open_extraction_runtime
 from baec_app.ai.provenance import PARSE_FAILURE_CODES, RemoteOutcome, RunRecord, RunStatus, TerminalResult
 from baec_app.ai.provider import ProviderApiError, ProviderTransportError
-from baec_app.ai.validation import SEMANTIC_FAILURE_CODES, VALIDATION_VERSION
+from baec_app.ai.validation import (
+    SEMANTIC_FAILURE_CODES,
+    SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION,
+    VALIDATION_VERSION,
+)
 from baec_app.application import open_read_connection
 from baec_app.data import database
 from baec_app.data.ai_provenance import (
@@ -53,6 +55,8 @@ from tests.ai_provenance_builders import (  # noqa: F401
 from tests.persistence_builders import tamper
 
 V1 = "baec-extraction-validation/v1"
+V2 = "baec-extraction-validation/v2"
+UNKNOWN_VERSION = "baec-extraction-validation/v9"  # no such validator exists
 V1_SEMANTIC = (
     "criterion_set_invalid", "duplicate_excerpt_id", "duplicate_excerpt_reference", "duplicate_excerpt_text",
     "excerpt_blank", "excerpt_id_blank", "excerpt_not_verbatim", "explanation_blank", "explanation_too_long",
@@ -62,7 +66,7 @@ V1_SEMANTIC = (
 )
 PARSE = ("invalid_json", "missing_stop_reason", "missing_text_block", "multiple_text_blocks",
          "structured_output_validation_failed")
-# Reserved by the design for validation v2 (6D-B2). Legal under no validator version in 6D-B1.
+# The validation-v2 grounding codes (6D-B2): legal under /v2 only, never for a run recorded as /v1.
 RESERVED_V2_GROUNDING = tuple(
     f"{scope}_{ending}"
     for scope in ("normalization", "explanation", "uncertainty")
@@ -79,8 +83,10 @@ NO_CODE_STATUSES = ("success", "refusal", "max_tokens", "unexpected_stop", "api_
 
 def test_the_v1_vocabularies_are_exactly_the_approved_tokens():
     assert len(V1_SEMANTIC) == 20 and len(PARSE) == 5 and len(RESERVED_V2_GROUNDING) == 18
-    assert tuple(AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION) == (V1,)
-    assert AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[V1] == V1_SEMANTIC == AI_SEMANTIC_FAILURE_CODES
+    assert tuple(AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION) == (V1, V2)
+    assert AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[V1] == V1_SEMANTIC
+    assert AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[V2] == tuple(sorted(V1_SEMANTIC + RESERVED_V2_GROUNDING))
+    assert AI_SEMANTIC_FAILURE_CODES == AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[V2]
     assert AI_PARSE_FAILURE_CODES == PARSE
     every = V1_SEMANTIC + PARSE + RESERVED_V2_GROUNDING
     assert len(set(every)) == 43  # the design's total, with no collisions
@@ -89,20 +95,22 @@ def test_the_v1_vocabularies_are_exactly_the_approved_tokens():
 
 
 def test_ai_layer_and_data_layer_vocabularies_are_equal():
-    assert VALIDATION_VERSION == V1 and VALIDATION_VERSION in AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION
-    assert set(SEMANTIC_FAILURE_CODES) == set(AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[VALIDATION_VERSION])
+    assert VALIDATION_VERSION == V2 and VALIDATION_VERSION in AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION
+    assert set(SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION) == set(AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION)
+    for version, codes in SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION.items():
+        assert set(codes) == set(AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[version]), version
+    assert set(SEMANTIC_FAILURE_CODES) == set(AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION[V1])
     assert len(SEMANTIC_FAILURE_CODES) == len(set(SEMANTIC_FAILURE_CODES))
     assert set(PARSE_FAILURE_CODES) == set(AI_PARSE_FAILURE_CODES) and len(PARSE_FAILURE_CODES) == 5
 
 
 def test_the_reserved_v2_grounding_codes_are_legal_nowhere_and_never_emitted_by_validator_v1():
-    known = {code for codes in AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION.values() for code in codes}
-    assert not set(RESERVED_V2_GROUNDING) & (known | set(AI_PARSE_FAILURE_CODES) | set(SEMANTIC_FAILURE_CODES))
-    assert "baec-extraction-validation/v2" not in AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION
-    source = inspect.getsource(validation)
-    for ending in ("number_unsupported", "numeric_kind_changed", "unit_changed", "compound_unsupported",
-                   "comparator_changed", "comparator_unresolved"):
-        assert ending not in source
+    """Name kept from 6D-B1 for ID continuity. Since 6D-B2 the grounding codes are legal under /v2 only."""
+    grounding = set(RESERVED_V2_GROUNDING)
+    for vocabulary in (AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION, SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION):
+        assert not grounding & set(vocabulary[V1])
+        assert grounding <= set(vocabulary[V2])
+    assert not grounding & (set(AI_PARSE_FAILURE_CODES) | set(SEMANTIC_FAILURE_CODES))
 
 
 # --- the contract matrix, applied to every layer -------------------------------------------------------
@@ -122,9 +130,6 @@ INVALID = {
     "semantic unsorted": ("semantic_validation_failure", ("excerpt_not_verbatim", "criterion_set_invalid")),
     "semantic duplicate": ("semantic_validation_failure", ("excerpt_blank", "excerpt_blank")),
     "semantic with parse code": ("semantic_validation_failure", ("invalid_json",)),
-    "semantic reserved v2 code": ("semantic_validation_failure", ("normalization_number_unsupported",)),
-    "semantic v1 plus reserved v2": ("semantic_validation_failure", ("excerpt_blank",
-                                                                     "explanation_comparator_changed")),
     "semantic uppercase": ("semantic_validation_failure", ("EXCERPT_BLANK",)),
     "semantic padded": ("semantic_validation_failure", (" excerpt_blank",)),
     "parse none": ("parse_failure", ()),
@@ -135,6 +140,12 @@ INVALID = {
     "parse suffixed": ("parse_failure", ("invalid_json:line1",)),
     **{f"{status} with a parse code": (status, ("invalid_json",)) for status in NO_CODE_STATUSES},
     **{f"{status} with a semantic code": (status, ("excerpt_blank",)) for status in NO_CODE_STATUSES},
+}
+# Legal under /v2 since 6D-B2, so legal for record construction and the current AI validator,
+# but still illegal for a run recorded as /v1: the store and SQL tests (all /v1 runs) refuse them.
+GROUNDING_UNDER_V1 = {
+    "semantic reserved v2 code": ("semantic_validation_failure", ("normalization_number_unsupported",)),
+    "semantic v1 plus reserved v2": ("semantic_validation_failure", ("excerpt_blank", "explanation_comparator_changed")),
 }
 
 
@@ -194,7 +205,7 @@ def _bypass(record: AiRunResultRecord, codes: tuple[str, ...]) -> AiRunResultRec
     return record
 
 
-STORE_INVALID = {label: case for label, case in INVALID.items()
+STORE_INVALID = {label: case for label, case in {**INVALID, **GROUNDING_UNDER_V1}.items()
                  if case[0] not in ("interrupted", "success")}  # interrupted: mark_interrupted only
 
 
@@ -221,7 +232,7 @@ def test_the_store_write_refuses_a_code_on_success(db):
     assert ai_rows(connection)["ai_run_results"] == 0
 
 
-@pytest.mark.parametrize("version", ["baec-extraction-validation/v2", "legacy", "baec-extraction-validation/v1 "])
+@pytest.mark.parametrize("version", [UNKNOWN_VERSION, "legacy", "baec-extraction-validation/v1 "])
 def test_a_semantic_code_is_refused_under_a_validator_version_that_cannot_emit_it(db, version):
     _, connection, store = db
     store.record_run(run_record(validation_version=version))
@@ -283,7 +294,7 @@ def test_a_tampered_stored_code_set_fails_closed_on_readback(stored, case):
         store.get_result(run_id)
 
 
-@pytest.mark.parametrize("version", ["baec-extraction-validation/v2", "legacy"])
+@pytest.mark.parametrize("version", [UNKNOWN_VERSION, "legacy"])
 def test_a_tampered_run_validator_version_makes_its_semantic_codes_fail_closed(stored, version):
     connection, store = stored
     tamper(connection, f"UPDATE ai_runs SET validation_version = '{version}' WHERE ai_run_id = 'RUN-S'")
@@ -369,7 +380,7 @@ def test_sql_accepts_null_codes_on_every_other_status(db, status):
 
 
 SQL_INVALID = {
-    **{label: (status, _json(codes)) for label, (status, codes) in INVALID.items()},
+    **{label: (status, _json(codes)) for label, (status, codes) in {**INVALID, **GROUNDING_UNDER_V1}.items()},
     "semantic not json": ("semantic_validation_failure", "excerpt_blank"),
     "semantic object": ("semantic_validation_failure", '{"excerpt_blank":1}'),
     "semantic json string": ("semantic_validation_failure", '"excerpt_blank"'),
@@ -395,7 +406,7 @@ def test_sql_refuses_every_illegal_code_set_in_a_raw_insert(db, case):
     assert ai_rows(connection)["ai_run_results"] == 0
 
 
-@pytest.mark.parametrize("version", ["baec-extraction-validation/v2", "legacy"])
+@pytest.mark.parametrize("version", [UNKNOWN_VERSION, "legacy"])
 def test_sql_refuses_a_semantic_code_under_a_validator_version_that_cannot_emit_it(db, version):
     _, connection, _ = db
     _raw_run(connection, version)
@@ -506,7 +517,7 @@ class RecordingProvider(FakeProvider):
 def test_the_validator_version_is_committed_before_the_provider_attempt(world):
     provider = RecordingProvider(response(as_text(output())), world.path)
     world.run(provider)
-    assert provider.seen == [[(V1,)]]
+    assert provider.seen == [[(V2,)]]
 
 
 TERMINAL_CASES = {
@@ -528,7 +539,7 @@ def test_every_terminal_status_keeps_the_runs_validator_version(world, case):
     reply, status = case
     result = world.run(FakeProvider(reply))
     assert result.status is status
-    assert world.store.get_run(result.ai_run_id).validation_version == V1
+    assert world.store.get_run(result.ai_run_id).validation_version == V2
     stored = world.store.get_result(result.ai_run_id)
     assert stored.status.value == status.value
     if status is RunStatus.PARSE_FAILURE:
@@ -548,7 +559,7 @@ def test_an_interrupted_run_keeps_its_validator_version(world):
     (run,) = world.store.list_incomplete_runs()
     world.store.mark_interrupted(run.ai_run_id, START + timedelta(hours=2), minimum_age=timedelta(hours=1))
     assert world.store.get_result(run.ai_run_id).status is AiRunStatus.INTERRUPTED
-    assert world.store.get_run(run.ai_run_id).validation_version == V1
+    assert world.store.get_run(run.ai_run_id).validation_version == V2
 
 
 def test_the_validator_version_is_not_part_of_the_request(world):

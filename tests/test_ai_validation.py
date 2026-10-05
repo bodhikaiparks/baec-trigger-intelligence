@@ -53,7 +53,8 @@ CASES = {
     "normalization_too_long": changed(normalized_evaluation_link="x" * 501),
     "explanation_blank": with_hypothesis(1, explanation="   "),
     "explanation_too_long": with_hypothesis(1, explanation="y" * 501),
-    "too_many_uncertainties": changed(uncertainties=[f"u{i}" for i in range(11)]),
+    # Digit-free placeholders: "u1"-style text is a compound that validation v2 would also reject.
+    "too_many_uncertainties": changed(uncertainties=[f"Open point {letter}." for letter in "abcdefghijk"]),
     "uncertainty_blank": changed(uncertainties=["ok", "\n"]),
     "uncertainty_too_long": changed(uncertainties=["z" * 501]),
 }

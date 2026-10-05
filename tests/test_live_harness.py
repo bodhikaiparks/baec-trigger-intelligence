@@ -18,7 +18,9 @@ from pathlib import Path
 
 import pytest
 
+from baec_app.ai import service as service_module
 from baec_app.ai.contracts import CRITERIA, BaecExtractionOutput
+from baec_app.ai.grounding import GROUNDING_FAILURE_CODES
 from baec_app.ai.prompts import SYSTEM_PROMPT_V1
 from baec_app.ai.provider import ProviderApiError, ProviderTransportError
 from baec_app.data.ai_provenance import AiRunStatus
@@ -373,12 +375,54 @@ CRITICAL_BEHAVIORS = {
 }
 
 
+def _without_production_grounding(monkeypatch):
+    """Simulate a production grounding guard that missed the corruption (Phase 6D design §7.2).
+
+    The harness's own checks are an independent second line: they must still catch what
+    reaches an artifact. Only the service's validator is wrapped, in this test file;
+    tests/live/harness.py never imports the production grounding.
+    """
+    real = service_module.validate_extraction
+
+    def d8_only(*args, **kwargs):
+        return tuple(code for code in real(*args, **kwargs) if code not in GROUNDING_FAILURE_CODES)
+
+    monkeypatch.setattr(service_module, "validate_extraction", d8_only)
+
+
 @pytest.mark.parametrize("case", CRITICAL_BEHAVIORS.values(), ids=CRITICAL_BEHAVIORS.keys())
-def test_critical_behaviors_make_a_model_ineligible(case):
+def test_critical_behaviors_make_a_model_ineligible(case, monkeypatch):
+    _without_production_grounding(monkeypatch)
     case_id, change, critical = case
     report, _ = run(overrides={case_id: _bad(case_id, change)})
     assert critical in report.critical_failures
     assert compare_models({SONNET: report}).outcome == "none_eligible"
+
+
+PRODUCTION_GROUNDED = {
+    "threshold made inclusive (C01)": "normalization_comparator_changed",
+    "threshold made strict (C02)": "normalization_comparator_changed",  # source "at least 15%"
+    "fabricated number (C09)": "normalization_number_unsupported",
+}
+
+
+@pytest.mark.parametrize("label", PRODUCTION_GROUNDED)
+def test_production_validation_v2_now_stops_the_numeric_corruptions_before_any_artifact(label, monkeypatch):
+    case_id, change, _ = CRITICAL_BEHAVIORS[label]
+    captured, real_audit = {}, harness.audit_persisted_cases
+
+    def keep(store, connection, outcomes):  # read the persisted result before the temporary database is deleted
+        case = next(o for o in outcomes if o.case_id == case_id)
+        captured.update(codes=store.get_result(case.ai_run_id).failure_codes,
+                        version=store.get_run(case.ai_run_id).validation_version)
+        return real_audit(store, connection, outcomes)
+
+    monkeypatch.setattr(harness, "audit_persisted_cases", keep)
+    report, _ = run(overrides={case_id: _bad(case_id, change)})
+    outcome = next(o for o in report.outcomes if o.case_id == case_id)
+    assert outcome.status == "semantic_validation_failure" and not outcome.artifact_present
+    assert PRODUCTION_GROUNDED[label] in captured["codes"]
+    assert captured["version"] == "baec-extraction-validation/v2"
 
 
 def test_a_fabricated_excerpt_is_a_critical_failure():
@@ -677,7 +721,7 @@ LOCKED_VERSIONS = {
     "input_version": "baec-extraction-input/v1",
     "output_schema_version": "baec-extraction-output/v1",
     "canonicalization_version": "baec-canonical-json/v1",
-    "validation_version": "baec-extraction-validation/v1",
+    "validation_version": "baec-extraction-validation/v2",
 }
 ALL_DIGESTS = ("request_digest_present", "prompt_digest_present", "input_digest_present", "output_schema_digest_present")
 TEST_MODEL = "claude-test-model-5"

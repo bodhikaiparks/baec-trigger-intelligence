@@ -210,7 +210,7 @@ AI_TRANSPORT_CATEGORIES = {"connection_not_established": "not_sent", "timeout_or
 # parse_failure carries exactly one parse code. semantic_validation_failure carries
 # one or more codes, sorted and unique, from the vocabulary of the validator
 # version its run recorded: a code is legal only under a validator that can emit it.
-# Validation v2 and its grounding codes are added here by 6D-B2, not before.
+# /v1 (Phase 6D-B1) is the 20 D8 codes; /v2 (Phase 6D-B2) adds the 18 grounding codes.
 AI_PARSE_FAILURE_CODES = (
     "invalid_json",
     "missing_stop_reason",
@@ -218,29 +218,39 @@ AI_PARSE_FAILURE_CODES = (
     "multiple_text_blocks",
     "structured_output_validation_failed",
 )
+# The 20 D8 semantic-validation codes (validator /v1).
+_AI_D8_FAILURE_CODES = (
+    "criterion_set_invalid",
+    "duplicate_excerpt_id",
+    "duplicate_excerpt_reference",
+    "duplicate_excerpt_text",
+    "excerpt_blank",
+    "excerpt_id_blank",
+    "excerpt_not_verbatim",
+    "explanation_blank",
+    "explanation_too_long",
+    "normalization_blank",
+    "normalization_too_long",
+    "possible_language_without_excerpt",
+    "source_interaction_mismatch",
+    "supported_without_excerpt",
+    "too_many_excerpt_references",
+    "too_many_excerpts",
+    "too_many_uncertainties",
+    "uncertainty_blank",
+    "uncertainty_too_long",
+    "unknown_excerpt_reference",
+)
+# The 18 validation-v2 grounding codes: three closed field scopes by six closed endings.
+AI_GROUNDING_FAILURE_CODES = tuple(sorted(
+    f"{scope}_{ending}"
+    for scope in ("normalization", "explanation", "uncertainty")
+    for ending in ("number_unsupported", "numeric_kind_changed", "unit_changed", "compound_unsupported",
+                   "comparator_changed", "comparator_unresolved")
+))
 AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION = {
-    "baec-extraction-validation/v1": (
-        "criterion_set_invalid",
-        "duplicate_excerpt_id",
-        "duplicate_excerpt_reference",
-        "duplicate_excerpt_text",
-        "excerpt_blank",
-        "excerpt_id_blank",
-        "excerpt_not_verbatim",
-        "explanation_blank",
-        "explanation_too_long",
-        "normalization_blank",
-        "normalization_too_long",
-        "possible_language_without_excerpt",
-        "source_interaction_mismatch",
-        "supported_without_excerpt",
-        "too_many_excerpt_references",
-        "too_many_excerpts",
-        "too_many_uncertainties",
-        "uncertainty_blank",
-        "uncertainty_too_long",
-        "unknown_excerpt_reference",
-    ),
+    "baec-extraction-validation/v1": _AI_D8_FAILURE_CODES,
+    "baec-extraction-validation/v2": tuple(sorted(_AI_D8_FAILURE_CODES + AI_GROUNDING_FAILURE_CODES)),
 }
 # Every semantic code legal under some known validator version.
 AI_SEMANTIC_FAILURE_CODES = tuple(sorted(set().union(*AI_SEMANTIC_FAILURE_CODES_BY_VALIDATION_VERSION.values())))
