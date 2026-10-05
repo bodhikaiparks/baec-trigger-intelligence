@@ -19,11 +19,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AI_ROOT = REPO_ROOT / "baec_app" / "ai"
 AI_MODULES = {"baec_app.ai", "baec_app.ai.contracts", "baec_app.ai.canonical", "baec_app.ai.prompts", "baec_app.ai.grounding",
               "baec_app.ai.provider", "baec_app.ai.provenance", "baec_app.ai.validation", "baec_app.ai.service",
-              "baec_app.ai.anthropic_provider", "baec_app.ai.composition"}
+              "baec_app.ai.anthropic_provider", "baec_app.ai.composition",
+              "baec_app.ai.verification"}  # Phase 7D: the pure verification façade
 COMPOSITION = "baec_app.ai.composition"
 PROVIDER = "baec_app.ai.anthropic_provider"
 PURE = {"baec_app.ai.service", "baec_app.ai.provider", "baec_app.ai.validation", "baec_app.ai.contracts",
-        "baec_app.ai.prompts", "baec_app.ai.canonical", "baec_app.ai.provenance", "baec_app.ai.grounding"}
+        "baec_app.ai.prompts", "baec_app.ai.canonical", "baec_app.ai.provenance", "baec_app.ai.grounding",
+        "baec_app.ai.verification"}
 
 
 def _modules(root: Path) -> list[tuple[str, str]]:
@@ -151,9 +153,19 @@ def a9_no_mcp_link(module, source):
     return found
 
 
+# Phase 7D: the one named exception to A9. Exactly this application module may import exactly the pure
+# verification façade (and names from it). Every other lower-layer import of baec_app.ai stays forbidden.
+A9_VERIFICATION_EXCEPTION = ("baec_app.application.ai_proposal_mapping", "baec_app.ai.verification")
+
+
+def _a9_excepted(module, name):
+    importer, facade = A9_VERIFICATION_EXCEPTION
+    return module == importer and (name == facade or name.startswith(facade + "."))
+
+
 def lower_layers_never_import_ai(module, source):
     return [f"{module}:{line} imports {name}" for name, line in _imported(module, source)
-            if name == "baec_app.ai" or name.startswith("baec_app.ai.")]
+            if (name == "baec_app.ai" or name.startswith("baec_app.ai.")) and not _a9_excepted(module, name)]
 
 
 A10_PACKAGES = ("importlib", "runpy", "subprocess", "pty", "socket", "requests", "urllib", "http", "aiohttp", "httpx",
@@ -212,10 +224,14 @@ def test_production_ai_code_obeys_the_rule(rule):
 
 
 def test_no_lower_layer_mcp_or_script_imports_the_ai_package():
+    """A9, with one named Phase 7D exception: application.ai_proposal_mapping -> ai.verification only."""
     others = (_modules(REPO_ROOT / "baec_app" / "domain") + _modules(REPO_ROOT / "baec_app" / "data")
               + _modules(REPO_ROOT / "baec_app" / "application") + _modules(REPO_ROOT / "baec_app" / "mcp")
               + _modules(REPO_ROOT / "scripts"))
     assert others and [m for module, source in others for m in lower_layers_never_import_ai(module, source)] == []
+    importers = {module for module, source in others
+                 for name, _ in _imported(module, source) if name.startswith("baec_app.ai")}
+    assert importers == {A9_VERIFICATION_EXCEPTION[0]}  # exactly one lower-layer module reaches the AI package
 
 
 def test_the_package_root_does_not_re_export_the_provider():
@@ -272,6 +288,25 @@ VIOLATIONS = {
     "A9 imports MCP SDK": (C, "from mcp.server import MCPServer", a9_no_mcp_link),
     "A9 lower layer imports ai": ("baec_app.application.facades", "from baec_app.ai.service import ExtractionService", lower_layers_never_import_ai),
     "A9 MCP imports ai": ("baec_app.mcp.tools", "import baec_app.ai.composition", lower_layers_never_import_ai),
+    "A9 mapping imports service": ("baec_app.application.ai_proposal_mapping",
+                                   "from baec_app.ai.service import ExtractionService", lower_layers_never_import_ai),
+    "A9 mapping imports validation directly": ("baec_app.application.ai_proposal_mapping",
+                                               "from baec_app.ai.validation import validate_extraction",
+                                               lower_layers_never_import_ai),
+    "A9 mapping imports the provider": ("baec_app.application.ai_proposal_mapping",
+                                        "import baec_app.ai.anthropic_provider", lower_layers_never_import_ai),
+    "A9 mapping imports contracts": ("baec_app.application.ai_proposal_mapping",
+                                     "from baec_app.ai.contracts import BaecExtractionOutput", lower_layers_never_import_ai),
+    "A9 mapping imports the package root": ("baec_app.application.ai_proposal_mapping",
+                                            "from baec_app.ai import verification", lower_layers_never_import_ai),
+    "A9 look-alike verification module": ("baec_app.application.ai_proposal_mapping",
+                                          "import baec_app.ai.verification_extra", lower_layers_never_import_ai),
+    "A9 second application module imports verification": ("baec_app.application.facades",
+                                                           "from baec_app.ai.verification import verify_persisted_extraction",
+                                                           lower_layers_never_import_ai),
+    "A9 data layer imports verification": ("baec_app.data.proposal_bridge",
+                                           "from baec_app.ai.verification import verify_persisted_extraction",
+                                           lower_layers_never_import_ai),
     "A10 importlib": (S, "import importlib", a10_no_dynamic_code_processes_or_raw_network),
     "A10 dunder import": (S, "__import__(name)", a10_no_dynamic_code_processes_or_raw_network),
     "A10 eval": (S, "eval(text)", a10_no_dynamic_code_processes_or_raw_network),
@@ -306,6 +341,9 @@ ALLOWED = {
     "A8 max_retries only": (P, "anthropic.Anthropic(max_retries=0)", a8_no_secrets_or_logging),
     "A10 httpx2 ConnectError check": (P, "import httpx2\nok = type(e.__cause__) is httpx2.ConnectError", a10_no_dynamic_code_processes_or_raw_network),
     "A10 re.compile": ("baec_app.ai.service", "import re\nP = re.compile('x')", a10_no_dynamic_code_processes_or_raw_network),
+    "A9 the named verification exception": ("baec_app.application.ai_proposal_mapping",
+                                            "from baec_app.ai.verification import verify_persisted_extraction",
+                                            lower_layers_never_import_ai),
 }
 
 

@@ -400,6 +400,13 @@ class ProposalBridgeStore:
                 decisions.append(ReviewDecisionRecord(**values))
         return tuple(decisions)
 
+    def confirmed_baec_for_artifact(self, artifact_id: str) -> str | None:
+        """The BAEC confirmed from this artifact's lineage, or None. A read only (Phase 7D, design E8)."""
+        row = self._db.execute(
+            "SELECT baec_id FROM ai_proposal_confirmations WHERE artifact_id = ?", (artifact_id,)
+        ).fetchone()
+        return None if row is None else row[0]
+
     # --- integrity ----------------------------------------------------------------
 
     def verify_bridge_integrity(self) -> None:

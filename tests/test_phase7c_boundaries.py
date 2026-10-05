@@ -134,10 +134,24 @@ def _imports(path: Path) -> set[str]:
     return names
 
 
+# Phase 7D: the only production module that may use the bridge store is the artifact -> AI_DRAFT mapper.
+BRIDGE_STORE_USERS = {"baec_app/application/ai_proposal_mapping.py"}
+
+
 def test_no_production_module_uses_the_bridge_store_yet():
-    users = [path.relative_to(REPO).as_posix() for path in sorted((REPO / "baec_app").rglob("*.py"))
-             if "proposal_bridge" in path.read_text(encoding="utf-8") and path.name != "proposal_bridge.py"]
-    assert users == []
+    """Since Phase 7D, exactly the approved mapper uses it (name kept for ID continuity)."""
+    users = {path.relative_to(REPO).as_posix() for path in sorted((REPO / "baec_app").rglob("*.py"))
+             if path.name != "proposal_bridge.py" and _imports(path) & {"baec_app.data.proposal_bridge"}}
+    assert users == BRIDGE_STORE_USERS
+
+
+def test_no_other_production_module_names_the_bridge_store_at_all():
+    """Text-level backstop: no import alias, dynamic import, or string reference outside the approved mapper."""
+    named = {path.relative_to(REPO).as_posix() for path in sorted((REPO / "baec_app").rglob("*.py"))
+             if path.name != "proposal_bridge.py"
+             and ("proposal_bridge" in path.read_text(encoding="utf-8")
+                  or "ProposalBridgeStore" in path.read_text(encoding="utf-8"))}
+    assert named == BRIDGE_STORE_USERS
 
 
 def test_the_bridge_store_imports_only_the_data_layer_and_the_standard_library():

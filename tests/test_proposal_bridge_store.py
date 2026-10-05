@@ -273,7 +273,8 @@ def test_the_store_exposes_no_grant_confirmation_consumption_or_domain_operation
     public = {name for name, _ in inspect.getmembers(ProposalBridgeStore, inspect.isfunction)
               if not name.startswith("_")}
     assert public == {"add_proposal", "add_revision", "add_decision", "get_proposal", "get_revision",
-                      "list_revisions", "list_decisions", "verify_bridge_integrity"}
+                      "list_revisions", "list_decisions", "verify_bridge_integrity",
+                      "confirmed_baec_for_artifact"}  # Phase 7D: one read for eligibility rule E8
     module_public = {name for name in vars(proposal_bridge) if not name.startswith("_")
                      and getattr(vars(proposal_bridge)[name], "__module__", None) == proposal_bridge.__name__}
     assert module_public == {"AiProposalRecord", "ProposalBridgeStore", "ReviewDecision", "ReviewDecisionRecord",

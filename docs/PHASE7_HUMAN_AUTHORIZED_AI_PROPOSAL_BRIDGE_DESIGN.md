@@ -1172,3 +1172,22 @@ None remain open.
 - After installation in 7E, Streamlit AppTest becomes part of the ordinary offline suite and the clean-export gates.
 
 **Locked build order:** 7C → 7D → 7F-A → 7E → 7F-B → 7G → 7H.
+
+---
+
+## Phase 7D implementation clarification
+
+Recorded during Phase 7D. Approved by the project owner. It is an IMPLEMENTATION clarification; it adds no research rule and changes no locked Phase 6 design text.
+
+**A9 remains in force, with exactly one verification-only import exception.**
+- Phase 6 rule A9 (`domain`, `data`, `application`, `mcp`, and `scripts` never import `baec_app.ai`) still applies.
+- There is one named exception: `baec_app.application.ai_proposal_mapping` may import exactly `baec_app.ai.verification`. No other application module may import the AI package, and the mapper may not import any other AI module (`contracts`, `canonical`, `validation`, `grounding`, `service`, `composition`, `provider`, `anthropic_provider`).
+- `baec_app/ai/verification.py` is a pure façade. It strictly re-parses a persisted result as the locked `baec-extraction-output/v1` contract, checks its `baec-canonical-json/v1` form, and re-runs the locked `validate_extraction`. It reads no data layer, provider, service, composition, network, environment, clock, or randomness.
+- **Why the verifier was not duplicated.** E4 requires the stored result to be re-checked against the locked contract and validator. A second implementation in the application layer would be a weaker, drifting copy of the Phase 6 rules. Re-using them through one pure façade keeps a single source of truth.
+- The future 7F-A grounding exception is not part of this clarification.
+
+**Proposal snapshot provenance.** The persisted `artifact_id` is the authoritative anchor for Phase 6 provenance. The §6.3 snapshot's `artifact` block holds only the stable source reference, `{artifact_id, artifact_digest}`. Requested and returned model, prompt version and digest, validator version, request digest, and output-schema version are reconstructed through the immutable artifact → run lineage and are not copied into the snapshot.
+
+**Store surface.** `ProposalBridgeStore` gains exactly one read-only method, `confirmed_baec_for_artifact(artifact_id)`, which eligibility rule E8 requires. It writes nothing.
+
+**Live-evaluation exclusion (§6.1) is structural.** Eligibility is evaluated only for an artifact reachable through the product database's durable provenance relationships. Temporary live-evaluation databases are not the product database and are deleted after evaluation. No heuristic field, path, or process history is inspected. Limitation: this structure does not cryptographically prove that rows were never copied by hand from another SQLite database.
