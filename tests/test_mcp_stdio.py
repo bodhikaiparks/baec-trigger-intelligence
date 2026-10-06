@@ -8,6 +8,7 @@ byte it writes. Everything is local: no sockets and no external services.
 The lifecycle tests record what mcp 2.2.0 actually does; see the docstrings.
 """
 
+import ast
 import json
 import os
 import signal
@@ -263,8 +264,20 @@ class RawServer:
             server_command(path, module), cwd=REPO_ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.lines = []
+        self._stderr_head = b""
         self._watchdog = threading.Timer(SPAWN_TIMEOUT, self.process.kill)
         self._watchdog.start()
+
+    def wait_until_stop_signals_armed(self):
+        """Read stderr until the child logs that its SIGTERM/SIGINT receiver is installed. Sends nothing.
+
+        The child logs this line inside the signal-receiver context, so it can appear only after the handlers
+        exist. The watchdog bounds the wait: a child that never arms its handlers is killed and this fails.
+        """
+        while b"stop signals armed" not in self._stderr_head:
+            line = self.process.stderr.readline()
+            assert line, "the child exited or closed stderr before arming its stop signals"
+            self._stderr_head += line
 
     def send(self, message):
         self.process.stdin.write((json.dumps(message) + "\n").encode())
@@ -298,7 +311,7 @@ class RawServer:
         self._watchdog.cancel()
         if not self.process.stdout.closed:
             self.lines += self.process.stdout.readlines()
-        stderr = self.process.stderr.read().decode()
+        stderr = (self._stderr_head + self.process.stderr.read()).decode()
         for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
             pipe.close()
         return returncode, stderr
@@ -447,8 +460,8 @@ def test_a_stop_signal_while_idle_closes_the_connection_and_exits_promptly(db, s
     server = RawServer(path)
     if initialized:
         server.initialize()
-    else:
-        time.sleep(0.5)  # let the child reach the event loop and install its signal receiver
+    server.wait_until_stop_signals_armed()  # a readiness condition, not a delay
+    assert initialized or server.lines == []  # before-initialize: nothing was sent and nothing was answered
     returncode, elapsed, stderr = server.stop(signum)
     assert returncode == 128 + signum and elapsed < 5
     assert f"{signal.Signals(signum).name} received; read connection closed" in stderr
@@ -485,3 +498,19 @@ def test_no_server_process_outlives_the_client(db, errlog):
     during = run(main)
     assert len(during) == 1  # the child existed while connected
     assert server_children() == []
+
+
+def test_the_stop_signal_readiness_line_is_logged_only_inside_the_signal_receiver():
+    """Regression guard for the readiness condition: the line must come after the receiver is installed.
+
+    If it were logged before anyio.open_signal_receiver, the test above could signal a child whose handlers
+    do not exist yet, and SIGTERM or SIGINT would end it with -15 or -2 instead of 128 + signum.
+    """
+    tree = ast.parse((REPO_ROOT / "baec_app" / "mcp" / "__main__.py").read_text(encoding="utf-8"))
+    receivers = [node for node in ast.walk(tree) if isinstance(node, (ast.With, ast.AsyncWith))
+                 and any("open_signal_receiver" in ast.unparse(item.context_expr) for item in node.items)]
+    assert len(receivers) == 1
+    first = receivers[0].body[0]
+    assert isinstance(first, ast.Expr) and ast.unparse(first.value) == "_logger.info('stop signals armed')"
+    mentions = [node for node in ast.walk(tree) if isinstance(node, ast.Constant) and node.value == "stop signals armed"]
+    assert len(mentions) == 1  # logged exactly once, in exactly that place

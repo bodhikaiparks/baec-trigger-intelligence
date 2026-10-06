@@ -72,6 +72,8 @@ async def _serve(runtime: McpRuntime) -> None:
 
         async def stop_on_signal() -> None:
             with anyio.open_signal_receiver(signal.SIGTERM, signal.SIGINT) as signals:
+                # stderr only, never the protocol: the stop handlers are installed from here on.
+                _logger.info("stop signals armed")
                 async for signum in signals:
                     runtime.close()
                     _logger.info("%s received; read connection closed", signal.Signals(signum).name)
