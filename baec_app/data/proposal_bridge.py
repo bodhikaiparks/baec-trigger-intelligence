@@ -339,7 +339,34 @@ class ProposalBridgeStore:
                           else value.value if column == "decision" else value)
         self._insert("ai_proposal_review_decisions", _DECISION_COLUMNS, tuple(values))
 
+    def add_accepted_revision(self, revision: ReviewRevisionRecord, decision: ReviewDecisionRecord) -> None:
+        """Insert one review revision and its ACCEPTED decision in one transaction: both, or neither (Phase 7E).
+
+        ACCEPTED records only that a human finalized this revision. It confirms no BAEC and authorizes nothing.
+        """
+        if type(revision) is not ReviewRevisionRecord or type(decision) is not ReviewDecisionRecord:
+            raise RecordValidationError("add_accepted_revision requires a ReviewRevisionRecord and a ReviewDecisionRecord")
+        if decision.decision is not ReviewDecision.ACCEPTED or decision.review_revision_id != revision.review_revision_id:
+            raise RecordValidationError("the decision must accept exactly this revision")
+        if (decision.proposal_id, decision.account_id) != (revision.proposal_id, revision.account_id):
+            raise RecordValidationError("the decision must belong to the revision's proposal and account")
+        revision_values = tuple(encode_datetime(revision.created_at) if column == "created_at"
+                                else getattr(revision, column) for column in _REVISION_COLUMNS)
+        decision_values = tuple(encode_datetime(decision.decided_at) if column == "decided_at"
+                                else decision.decision.value if column == "decision" else getattr(decision, column)
+                                for column in _DECISION_COLUMNS)
+        with self._write():
+            for table, columns, values in (("ai_proposal_review_revisions", _REVISION_COLUMNS, revision_values),
+                                           ("ai_proposal_review_decisions", _DECISION_COLUMNS, decision_values)):
+                self._db.execute(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                                 values)
+
     # --- reads --------------------------------------------------------------------
+
+    def list_proposals(self) -> tuple[AiProposalRecord, ...]:
+        """Every stored AI_DRAFT proposal, oldest first, each re-verified on load (Phase 7E)."""
+        ids = self._db.execute("SELECT proposal_id FROM ai_proposals ORDER BY rowid").fetchall()
+        return tuple(self.get_proposal(row[0]) for row in ids)
 
     def get_proposal(self, proposal_id: str) -> AiProposalRecord:
         row = self._db.execute(

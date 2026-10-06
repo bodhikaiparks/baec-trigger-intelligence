@@ -274,7 +274,8 @@ def test_the_store_exposes_no_grant_confirmation_consumption_or_domain_operation
               if not name.startswith("_")}
     assert public == {"add_proposal", "add_revision", "add_decision", "get_proposal", "get_revision",
                       "list_revisions", "list_decisions", "verify_bridge_integrity",
-                      "confirmed_baec_for_artifact"}  # Phase 7D: one read for eligibility rule E8
+                      "confirmed_baec_for_artifact",  # Phase 7D: one read for eligibility rule E8
+                      "list_proposals", "add_accepted_revision"}  # Phase 7E: listing, and revision + ACCEPTED atomically
     module_public = {name for name in vars(proposal_bridge) if not name.startswith("_")
                      and getattr(vars(proposal_bridge)[name], "__module__", None) == proposal_bridge.__name__}
     assert module_public == {"AiProposalRecord", "ProposalBridgeStore", "ReviewDecision", "ReviewDecisionRecord",
@@ -289,7 +290,11 @@ def test_the_store_writes_only_the_three_review_tables():
     assert inserted == {"ai_proposals", "ai_proposal_review_revisions", "ai_proposal_review_decisions"}
     literals = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
     sql_writes = [text for text in literals if any(verb in text.upper() for verb in ("INSERT INTO", "UPDATE ", "DELETE "))]
-    assert sql_writes == ["INSERT INTO "]  # the single generic plain INSERT in _insert; no UPDATE or DELETE
+    assert sql_writes == ["INSERT INTO ", "INSERT INTO "]  # plain INSERTs only (_insert, add_accepted_revision)
+    accepted = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                    and node.name == "add_accepted_revision")
+    assert {n.value for n in ast.walk(accepted) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and n.value.startswith("ai_")} == {"ai_proposal_review_revisions", "ai_proposal_review_decisions"}
     source = MODULE.read_text(encoding="utf-8")
     for forbidden in ("UPDATE accounts", "account_state_transitions", "dormancy_judgments", "staleness_status",
                       "INSERT INTO baec_records", "INSERT INTO human_authorizations", "state_machine",

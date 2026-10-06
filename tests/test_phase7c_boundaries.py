@@ -135,7 +135,8 @@ def _imports(path: Path) -> set[str]:
 
 
 # Phase 7D: the only production module that may use the bridge store is the artifact -> AI_DRAFT mapper.
-BRIDGE_STORE_USERS = {"baec_app/application/ai_proposal_mapping.py"}
+BRIDGE_STORE_USERS = {"baec_app/application/ai_proposal_mapping.py",
+                      "baec_app/application/proposal_review.py"}  # Phase 7E: the human-review layer
 
 
 def test_no_production_module_uses_the_bridge_store_yet():

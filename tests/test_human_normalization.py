@@ -358,7 +358,7 @@ def test_the_validator_is_not_exported_or_used_by_production_yet():
                 users.append(path.name)
             elif isinstance(node, ast.Import) and any("human_normalization" in a.name for a in node.names):
                 users.append(path.name)
-    assert users == []
+    assert users == ["proposal_review.py"]  # Phase 7E: the review layer, before a revision is saved
 
 
 def test_validation_is_deterministic_and_has_no_persisted_effects(tmp_path):
