@@ -1191,3 +1191,20 @@ Recorded during Phase 7D. Approved by the project owner. It is an IMPLEMENTATION
 **Store surface.** `ProposalBridgeStore` gains exactly one read-only method, `confirmed_baec_for_artifact(artifact_id)`, which eligibility rule E8 requires. It writes nothing.
 
 **Live-evaluation exclusion (§6.1) is structural.** Eligibility is evaluated only for an artifact reachable through the product database's durable provenance relationships. Temporary live-evaluation databases are not the product database and are deleted after evaluation. No heuristic field, path, or process history is inspected. Limitation: this structure does not cryptographically prove that rows were never copied by hand from another SQLite database.
+
+---
+
+## Phase 7F-B implementation clarification
+
+Recorded during Phase 7F-B and approved by the project owner. This is IMPLEMENTATION architecture, not a manuscript finding; it changes no research rule and rewrites no earlier text of this design.
+
+- **Issuance path.** Authorization is an explicit Streamlit action ("Authorize BAEC confirmation") → `ProposalAuthorizationService.authorize_confirmation` → one persisted grant. It does not route through the Phase 4 in-memory approval gate; the design's `request_grant` and gate-approval steps (§8.3, §12.5) are not used. The 7C refusal of AI_DRAFT on the Phase 4 path is unchanged.
+- **ACCEPTED decision.** Phase 7E already persists the ACCEPTED review decision together with its revision. Issuance reuses that decision; it does not insert one.
+- **Transaction ownership.** The application-layer `ConfirmationExecutionService` owns the single `BEGIN IMMEDIATE` execution transaction and calls narrow data-layer pieces inside it (`insert_confirmed_record`, `AuthorizationGrantStore.record_confirmation`), instead of a `GrantExecutionStore` callback (§14). The atomic scope is unchanged: the confirmed BAEC, its HumanAuthorization, the confirmation link, and the grant consumption commit together or not at all, and a failed execution leaves the grant unconsumed.
+- **Audit chain.** `human_authorizations` is schema-unchanged. The exact reviewed-content digest stays in the immutable grant and is reconstructable, one to one, through HumanAuthorization → `ai_proposal_confirmations` → `human_authorization_grants` → proposal → review revision → reviewed-content digest, enforced by the schema's UNIQUE keys, composite foreign keys, and the authorization-binding trigger.
+- **Authority construction.** `authority.authorize_grant` is the only construction path from a persisted grant to a HumanAuthorization. It refuses on its own any grant whose action is not `CONFIRM_BAEC` or whose binding digest no longer covers its binding. Expiry, supersession, consumption, latest revision, and classification remain executor checks.
+- **Status precedence.** consumed > superseded > expired > active. A grant already exercised stays historically CONSUMED; for an unconsumed grant, SUPERSEDED wins over EXPIRED.
+- **Timestamps.** `HumanAuthorization.authorized_at` is the grant's issuance time, when the human authorized; execution consumes that authority later.
+- **Subject.** `baec_id` is preallocated at issuance and bound into the grant, so the exact future domain subject is part of what the human authorized. A replacement grant after expiry receives its own `baec_id`; the expired grant's subject remains historical grant material and creates no BAEC.
+- **No state change.** Confirmation creates a confirmed BAEC record only. No account-state transition, dormancy judgment, or staleness change accompanies it.
+- **Identity.** The actor label is self-asserted; there is no authentication.

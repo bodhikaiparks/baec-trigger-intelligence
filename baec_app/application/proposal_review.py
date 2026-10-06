@@ -71,6 +71,7 @@ from baec_app.domain.enums import (
     CriterionFinding,
     ElicitationMode,
     ProvenanceCategory,
+    ThresholdComparator,
 )
 from baec_app.domain.models import (
     BaecCandidate,
@@ -560,3 +561,56 @@ def stringency_from_fields(*, verbatim_text: str, comparator, numeric_value: str
                                     recurrence_text or None, timing_text or None)
     except (DomainValidationError, ArithmeticError, TypeError, ValueError):
         raise ReviewNotSaved("candidate_invalid") from None
+
+
+def _decisions_from_content(content: dict) -> ReviewDecisions:
+    """The ReviewDecisions a stored baec-ai-review-content/v1 revision records, rebuilt from its fields only."""
+    stringency = content["stringency"]
+    return ReviewDecisions(
+        evidence_selections=tuple(EvidenceSelection(e["selection_id"], e["text"], ProvenanceCategory(e["provenance"]),
+                                                    e["suggested_excerpt_id"]) for e in content["evidence_selections"]),
+        source_selection_id=content["source_selection_id"],
+        buyer_exact_statement=content["buyer_exact_statement"],
+        findings=tuple(CriterionDecision(BaecCriterion(f["criterion"]), CriterionFinding(f["finding"]),
+                                         tuple(f["evidence_selection_ids"])) for f in content["findings"]),
+        articulation_origin=ArticulationOrigin(content["articulation_origin"]),
+        elicitation_mode=ElicitationMode(content["elicitation_mode"]),
+        stringency=NO_STRINGENCY_STATED if stringency is None else stringency_from_fields(
+            verbatim_text=stringency["verbatim_text"],
+            comparator=None if stringency["comparator"] is None else ThresholdComparator(stringency["comparator"]),
+            numeric_value=stringency["numeric_value"], unit=stringency["unit"],
+            qualitative_term=stringency["qualitative_term"], recurrence_text=stringency["recurrence_text"],
+            timing_text=stringency["timing_text"]),
+        final_normalized_condition=content["normalization"]["condition"]["final_value"],
+        final_normalized_evaluation_link=content["normalization"]["evaluation_link"]["final_value"],
+    )
+
+
+def rebuild_reviewed_candidate(proposal: AiProposalRecord, revision: ReviewRevisionRecord,
+                               interaction_text: str) -> BaecCandidate:
+    """Re-derive the confirmation candidate from one immutable reviewed revision (Phase 7F-B).
+
+    Authority comes only from the stored human review: its selections are re-checked against the stored source,
+    its provenance and buyer-exact-statement lineage are re-checked, the human-normalization contract is re-run
+    over the selected texts, and the revision's content must re-serialize byte for byte from what was rebuilt.
+    Nothing earlier (a preview, a UI state, an AI value) is trusted. Raises ReviewNotSaved with a closed code.
+    """
+    try:
+        content = json.loads(revision.content)
+        decisions = _decisions_from_content(content)
+    except (KeyError, TypeError, ValueError):
+        raise ReviewNotSaved("proposal_integrity_failure") from None
+    selections = _verified_selections(decisions, interaction_text, json.loads(proposal.content))
+    candidate = _candidate(decisions, selections, proposal)
+    codes = validate_final_normalization(
+        normalized_condition=decisions.final_normalized_condition,
+        normalized_evaluation_link=decisions.final_normalized_evaluation_link,
+        evidence_texts=tuple(s.text for s in selections),
+    )
+    if codes:
+        raise ReviewNotSaved("normalization_invalid", codes)
+    rebuilt = canonical_text(_review_content(proposal, revision.revision_number, revision.previous_revision_id,
+                                             decisions, content["captured_at"]))
+    if rebuilt != revision.content:
+        raise ReviewNotSaved("proposal_integrity_failure")
+    return candidate

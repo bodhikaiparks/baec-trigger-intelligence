@@ -32,6 +32,7 @@ from typing import Iterator
 
 from baec_app.data.database import (
     INTERACTION_EVIDENCE_PROVENANCE,
+    PersistenceError,
     PersistenceIntegrityError,
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -141,6 +142,36 @@ def _fail_closed(what: str) -> Iterator[None]:
 
 def _positions_are_contiguous(positions: list[int]) -> bool:
     return positions == list(range(len(positions)))
+
+
+def _check_new_confirmed_record(record: BaecRecord) -> None:
+    """The checks every newly confirmed BAEC passes before it is written (unchanged from Phase 3)."""
+    if not isinstance(record, BaecRecord):
+        raise RepositoryVerificationError("save_confirmed_baec requires a BaecRecord")
+    if record.classification is not BaecClassification.CONFIRMED_BAEC:
+        raise RepositoryVerificationError(
+            "only a CONFIRMED_BAEC record can be saved with save_confirmed_baec"
+        )
+    if record.staleness_status is not StalenessStatus.CURRENT:
+        raise RepositoryVerificationError("a newly saved confirmed BAEC must be CURRENT")
+    Repository._verify_against_rules(record)
+
+
+def insert_confirmed_record(connection: sqlite3.Connection, record: BaecRecord) -> int:
+    """Write one newly confirmed BAEC inside the caller's open transaction; return its authorization id.
+
+    The narrow confirmed-BAEC write primitive (Phase 7F-B). It applies exactly the checks and inserts of
+    Repository.save_confirmed_baec (the authorization row, verbatim evidence rows, the record, assessments, and
+    stringency) and nothing else: no account state, transition, dormancy, staleness, or other write. It never
+    opens, commits, or rolls back a transaction; the caller owns the one transaction that must contain it.
+    """
+    if not connection.in_transaction:
+        raise PersistenceError("insert_confirmed_record must run inside the caller's open transaction")
+    _check_new_confirmed_record(record)
+    Repository(connection)._insert_record(record)
+    return connection.execute(
+        "SELECT confirmation_authorization_id FROM baec_records WHERE baec_id = ?", (record.baec_id,)
+    ).fetchone()[0]
 
 
 class Repository:
@@ -355,15 +386,7 @@ class Repository:
 
     def save_confirmed_baec(self, record: BaecRecord) -> None:
         """Save a newly confirmed BAEC. New confirmed records must be CURRENT."""
-        if not isinstance(record, BaecRecord):
-            raise RepositoryVerificationError("save_confirmed_baec requires a BaecRecord")
-        if record.classification is not BaecClassification.CONFIRMED_BAEC:
-            raise RepositoryVerificationError(
-                "only a CONFIRMED_BAEC record can be saved with save_confirmed_baec"
-            )
-        if record.staleness_status is not StalenessStatus.CURRENT:
-            raise RepositoryVerificationError("a newly saved confirmed BAEC must be CURRENT")
-        self._verify_against_rules(record)
+        _check_new_confirmed_record(record)
         with self._write():
             self._insert_record(record)
 

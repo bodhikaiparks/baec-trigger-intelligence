@@ -52,18 +52,33 @@ def test_streamlit_is_pinned_exactly_in_the_existing_manifest():
     assert streamlit.__version__ == "1.65.0"
 
 
+# Phase 7F-B: grants and their execution exist, and only in these modules. Name kept for ID continuity.
+GRANT_SURFACE = {
+    "issue_grant": set(), "issue_confirmation_grant": set(), "request_grant": set(),
+    "authorize_confirmation": {"baec_app/application/proposal_authorization.py"},
+    "authorize_grant": {"baec_app/application/authority.py"},
+    "GrantExecutionFacade": set(), "GrantExecutionStore": set(),
+    "ConfirmationExecutionService": {"baec_app/application/proposal_authorization.py"},
+    "AuthorizationGrantStore": {"baec_app/data/authorization_grants.py"},
+    "insert_confirmed_record": {"baec_app/data/repository.py"},
+}
+GRANT_TABLE_USERS = {"baec_app/data/authorization_grants.py", "baec_app/data/database.py",
+                     "baec_app/data/proposal_bridge.py"}
+
+
 def test_no_grant_confirmation_or_mcp_write_surface_exists_yet():
-    assert not (REPO / "baec_app" / "mcp_write").exists()
-    for package in ("application", "interfaces", "data"):
-        for path in _modules(package):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            defined = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
-            for name in ("issue_grant", "issue_confirmation_grant", "request_grant", "authorize_confirmation",
-                         "authorize_grant", "GrantExecutionFacade", "GrantExecutionStore", "insert_confirmed_record"):
-                assert name not in defined, (path.name, name)
-    writers = [path.relative_to(REPO).as_posix() for package in ("application", "interfaces")
-               for path in _modules(package) if "human_authorization_grant" in path.read_text(encoding="utf-8")]
-    assert writers == []
+    assert not (REPO / "baec_app" / "mcp_write").exists()  # still absent until 7G
+    for name, allowed in GRANT_SURFACE.items():
+        definers = set()
+        for package in PACKAGES:
+            for path in _modules(package):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                if name in {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.ClassDef))}:
+                    definers.add(path.relative_to(REPO).as_posix())
+        assert definers == allowed, name
+    writers = {path.relative_to(REPO).as_posix() for package in PACKAGES for path in _modules(package)
+               if "human_authorization_grant" in path.read_text(encoding="utf-8").split('"""', 2)[-1]}
+    assert writers == GRANT_TABLE_USERS
 
 
 def test_the_phase7e_modules_reach_no_account_state_or_dormancy_operation():

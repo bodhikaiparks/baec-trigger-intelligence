@@ -377,12 +377,14 @@ def test_the_page_uses_only_the_application_review_service_and_never_the_store()
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     assert imported == {"__future__", "sys", "streamlit", "baec_app.application", "baec_app.application.proposal_review",
+                        "baec_app.application.proposal_authorization",  # Phase 7F-B: grant issuance only
                         "baec_app.domain.enums"}
     text = PAGE.read_text(encoding="utf-8")
     code = text.split('"""', 2)[2]  # everything after the module docstring
-    for forbidden in ("ProposalBridgeStore", "proposal_bridge", "baec_app.data", "sqlite3", "INSERT", "grant_",
-                      "issue_grant", "authorize(", "authorize_confirmation", "HumanAuthorization", "confirm_baec", "move_to_", "state_machine",
-                      "add_revision", "add_decision", "add_accepted_revision"):
+    for forbidden in ("ProposalBridgeStore", "proposal_bridge", "baec_app.data", "sqlite3", "INSERT", "human_authorization_grant", "ai_proposal_confirmations",
+                      "issue_grant", "authorize(", "authorize_grant", "HumanAuthorization", "confirm_baec", "move_to_", "state_machine",
+                      "add_revision", "add_decision", "add_accepted_revision",
+                      "ConfirmationExecutionService", ".execute(", "insert_confirmed_record", "AuthorizationGrantStore"):
         assert forbidden not in code, forbidden
     for wording in ("Confirmed BAEC", "Active Opportunity", "Buyer Ready", "Trigger Occurred", "Purchase Intent"):
         assert wording not in text, wording

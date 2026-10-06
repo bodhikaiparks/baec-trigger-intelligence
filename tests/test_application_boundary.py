@@ -296,6 +296,7 @@ AUTHORITY_IMPORTERS = (
     "baec_app.application.classification",
     "baec_app.application.dormancy",
     "baec_app.application.account_state",
+    "baec_app.application.proposal_authorization",  # Phase 7F-B: authorize_grant, for persisted grants only
 )
 
 

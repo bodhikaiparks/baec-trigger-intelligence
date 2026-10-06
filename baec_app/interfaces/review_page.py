@@ -11,6 +11,10 @@ explicit "Use AI suggestion" click, which still finalizes nothing.
 A review decision records only that a human reviewed an AI Draft. Accepting a review does not confirm a
 BAEC, establish purchase intent, change account state, issue an authorization grant, or contact anyone.
 Reviewer identity is self-asserted in this prototype; authentication is out of scope.
+
+Phase 7F-B adds one separate, explicit human action on an accepted review: "Authorize BAEC confirmation",
+which asks the application to persist a 15-minute, single-use grant. Authorizing is not confirming: this page
+never executes a grant and never creates a BAEC.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import sys
 import streamlit as st
 
 from baec_app.application import SystemClock
+from baec_app.application.proposal_authorization import AuthorizationRefused, ProposalAuthorizationService
 from baec_app.application.proposal_review import (
     CRITERIA,
     EVIDENCE_PROVENANCE,
@@ -48,6 +53,11 @@ BANNER = (
 IDENTITY_NOTE = "Reviewer identity is self-asserted in this prototype; authentication is out of scope."
 ACCEPT_MEANING = ("Accepting records only that a human finalized this review. It does not confirm a BAEC, "
                   "establish purchase intent, change account state, or authorize anything.")
+AUTHORIZATION_NOTE = ("Authorization is a separate human action. It permits one later execution of the BAEC-confirmation "
+                      "action for exactly this accepted revision, for 15 minutes after issuance. It does not confirm the BAEC, and no "
+                      "confirmation is executed from this page.")
+GRANT_LABELS = {"ACTIVE": "Authorization Granted (active)", "EXPIRED": "Authorization expired",
+                "SUPERSEDED": "Authorization superseded", "CONSUMED": "Authorization consumed"}
 STATE_LABELS = {"OPEN": "AI Draft — Human Review open", "REVIEW_ACCEPTED": "Review Accepted",
                 "REVIEW_REJECTED": "Review Rejected"}
 BUYER_STATEMENT_CHOICES = ("No exact buyer statement", "Record an exact buyer statement")
@@ -244,6 +254,33 @@ def _render_review(service: ProposalReviewService, review) -> None:
             st.success("Review Rejected. No BAEC, grant, or account change was made.")
 
 
+def _render_authorization(authorization: ProposalAuthorizationService, pid: str) -> None:
+    try:
+        status = authorization.authorization_status(pid)
+    except AuthorizationRefused as refusal:
+        st.error(f"Authorization unavailable: {refusal}")
+        return
+    st.header("AUTHORIZATION — a separate explicit human action, not a confirmation")
+    st.caption(IDENTITY_NOTE)
+    st.caption(AUTHORIZATION_NOTE)
+    classification = status.classification.value if status.classification is not None else "not available"
+    st.text(f"Classifier result, recomputed from the accepted revision: {classification}")
+    if status.eligibility_failure is not None:
+        st.text(f"Not eligible for authorization: {status.eligibility_failure}")
+    for grant in status.grants:
+        st.text(f"{GRANT_LABELS[grant.status]} · {grant.grant_id} · issued {grant.issued_at.isoformat()} · "
+                f"expires {grant.expires_at.isoformat()} · by {grant.actor_label} (self-asserted)")
+    if st.button("Authorize BAEC confirmation (a separate human authorization; does not confirm)",
+                 key=f"authorize_{pid}"):
+        try:
+            grant = authorization.authorize_confirmation(pid, actor_label=st.session_state.get(f"reviewer_{pid}", ""))
+        except AuthorizationRefused as refusal:
+            st.error(f"Not authorized: {refusal}")
+        else:
+            st.success(f"Authorization Granted — {grant.grant_id}, expires {grant.expires_at.isoformat()}. "
+                       "Not executed: no BAEC has been confirmed.")
+
+
 def main() -> None:
     st.title("BAEC Human Review of AI Drafts")
     st.warning(BANNER)
@@ -260,12 +297,18 @@ def main() -> None:
             return
         labels = {p.proposal_id: f"{p.proposal_id} · {p.account_id} · {STATE_LABELS[p.review_state]}" for p in proposals}
         pid = st.selectbox("AI Draft", list(labels), format_func=labels.get, key="proposal")
-        review = service.load_review(pid)
+        try:
+            review = service.load_review(pid)
+        except ReviewNotSaved as closed:
+            st.info(f"This AI Draft is closed to review: {closed}")
+            return
         st.header("SOURCE EVIDENCE — the stored interaction (untrusted text, shown as plain text)")
         st.text(f"Account {review.account_id} · interaction {review.interaction_id} · {review.interaction_occurred_at}")
         st.text(review.interaction_text)
         _render_ai(review)
         _render_review(service, review)
+        if review.review_state == "REVIEW_ACCEPTED":
+            _render_authorization(ProposalAuthorizationService(connection, clock=SystemClock()), pid)
     finally:
         connection.close()
 
