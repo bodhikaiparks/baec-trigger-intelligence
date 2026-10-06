@@ -1208,3 +1208,32 @@ Recorded during Phase 7F-B and approved by the project owner. This is IMPLEMENTA
 - **Subject.** `baec_id` is preallocated at issuance and bound into the grant, so the exact future domain subject is part of what the human authorized. A replacement grant after expiry receives its own `baec_id`; the expired grant's subject remains historical grant material and creates no BAEC.
 - **No state change.** Confirmation creates a confirmed BAEC record only. No account-state transition, dormancy judgment, or staleness change accompanies it.
 - **Identity.** The actor label is self-asserted; there is no authentication.
+
+---
+
+## Phase 7G implementation clarification
+
+Recorded during Phase 7G. This is IMPLEMENTATION architecture, not a manuscript finding; it changes no research rule and rewrites no earlier text of this design.
+
+- **Phase 5 is unchanged.** The MCP Core in `baec_app/mcp/` keeps its 8 resources, 4 read-only preview tools, 0 prompts, its `mode=ro` connection, and `PRAGMA query_only`. No Phase 5 file changed; it imports nothing from Phase 7G.
+- **Separate write composition.** `baec_app/mcp_write/` is its own package with its own stdio entry point (`python -m baec_app.mcp_write --database PATH`). It opens one writable connection to an existing current-schema database (`mode=rw`, foreign keys on). It never creates, seeds, or migrates a database. The production clock is `SystemClock` (aware UTC), composed in the entry point; tests inject fixed clocks.
+- **Writable opening is isolated to `mcp_write/composition.py`.** No existing opener has the semantics required here: existing file only, writable, no create, no migrate, current schema required. So `composition.py`, and no other `mcp_write` module, imports `sqlite3`, `check_sqlite_version`, and `require_current_schema`.
+- **Exactly one tool.** The server registers `confirm_baec(grant_id)` and no resources or prompts. The closed argument model accepts only `grant_id` matching `^grant_[0-9a-f]{64}$`. Any other field is rejected at the input schema, not ignored.
+- **MCP cannot issue grants.** The package does not import or name `ProposalAuthorizationService`, `authorize_confirmation`, `add_grant`, `GrantRecord`, the review service, the mapper, or `authorize_grant`. Grants are issued only by the explicit human action on the review page. That page still cannot execute a grant.
+- **The executor holds only an execution grant capability.** Grant persistence has two capabilities.
+  - `GrantExecutionStore` has exactly `get_grant`, `lifecycle`, and `record_confirmation`. It cannot insert, re-issue, or supersede a grant.
+  - `AuthorizationGrantStore` extends it with `add_grant`, `grants_for_revision`, and `grants_for_proposal`. Only `ProposalAuthorizationService` holds it.
+
+  `ConfirmationExecutionService` holds a `GrantExecutionStore`, so the executor composed into the MCP server retains no issuance capability. A capability walk from the composed runtime finds no `add_grant`, `authorize_confirmation`, `GrantRecord.issue`, or `ProposalAuthorizationService`. A negative-control test shows the walk fails if the issuance-capable store is restored. Grant semantics and issuance behavior are unchanged.
+- **No authoritative content from MCP.** The tool supplies no actor, subject, evidence, statement, criteria, stringency, normalization, or state. Everything authoritative comes from the persisted grant and the human-reviewed revision it binds.
+- **The executor stays the authority boundary.** The tool calls `ConfirmationExecutionService.execute(grant_id)` exactly once and translates the outcome; it never retries. The executor revalidates the grant, lineage, review, normalization, and classification inside one transaction.
+- **Results.** Success is structured metadata only: `{status: "confirmed", baec_id, proposal_id, review_revision_id, grant_id}`. A refusal is an MCP tool error (`isError`). Its text, after the SDK's `Error executing tool confirm_baec: ` prefix, is the canonical JSON `{"code", "grant_id", "status": "refused"}`, carrying the executor's closed code unchanged. Any other failure is the SDK's generic tool error, with details on the server's stderr only.
+- **Differences from §16.2–§16.3 as written.** These follow the implemented 7F-B executor.
+  - There is no `GrantExecutionFacade`; the tool calls `ConfirmationExecutionService` directly.
+  - The tool is defined in `server.py`; there is no separate `tools.py`.
+  - The composition imports `sqlite3` and `baec_app.data.database` (`check_sqlite_version`, `require_current_schema`) for construction only, as approved above.
+  - The success result carries `review_revision_id` and `status`, not `account_id` and `classification`.
+  - `idempotentHint` is intentionally left unset, instead of `false`. A repeat call after consumption is safely refused (`grant_already_consumed`, nothing written); it is not represented as an idempotent repeat-success operation. The other annotations are `readOnlyHint=false`, `destructiveHint=false`, and `openWorldHint=false`.
+  - A malformed grant id fails MCP input-schema validation. It never reaches the executor's `grant_id_invalid` refusal.
+- **Transitive pure-AI imports.** Pure deterministic Phase 6 verification and grounding modules (`ai.verification`, `ai.grounding`, and their pure helpers) may load transitively through the locked application revalidation path; this is approved. `mcp_write` imports no `baec_app.ai` module directly and invokes no model. Fresh-interpreter tests show that the write composition loads no provider module, no `anthropic`, no Streamlit, no `baec_app.interfaces`, and no Phase 5 `baec_app.mcp`.
+- **Not a sandbox.** The capability claim covers what the composed MCP server holds. Python code with import access, or with local access to the process or database, could bypass these conventions. The model-visible surface is the one tool.

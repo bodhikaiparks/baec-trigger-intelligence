@@ -382,6 +382,8 @@ def rule_r3_interfaces_do_not_import_data(facts: Facts) -> list[str]:
 MODEL_PACKAGES = ("anthropic", "claude_agent_sdk", "claude_code_sdk", "openai", "litellm", "langchain")
 MCP_PACKAGES = ("mcp", "fastmcp")
 MCP_INTERFACE_PACKAGE = "baec_app.mcp"  # the approved Phase 5 MCP Core package (docs/PHASE5_MCP_CORE_DESIGN.md)
+# The approved Phase 7G one-tool write package (docs/PHASE7_HUMAN_AUTHORIZED_AI_PROPOSAL_BRIDGE_DESIGN.md §16.3).
+MCP_WRITE_PACKAGE = "baec_app.mcp_write"
 # The one approved Phase 6 provider adapter (docs/PHASE6C_ANTHROPIC_SDK_CHARACTERIZATION.md §11). Exact module only.
 ANTHROPIC_PROVIDER_MODULE = "baec_app.ai.anthropic_provider"
 
@@ -391,15 +393,16 @@ def rule_no_model_or_mcp_integration(facts: Facts) -> list[str]:
 
     The one exception: the anthropic SDK may be imported by exactly
     baec_app.ai.anthropic_provider (Phase 6). The MCP SDK may be imported only by
-    the approved Phase 5 MCP interface package (baec_app.mcp); the application,
-    domain, data, and scripts may not.
+    the approved Phase 5 MCP interface package (baec_app.mcp) and, since Phase 7G,
+    the one-tool write package (baec_app.mcp_write); the application, domain,
+    data, and scripts may not.
     """
     found = []
     for package in MODEL_PACKAGES:
         if package == "anthropic" and facts.module == ANTHROPIC_PROVIDER_MODULE:
             continue
         found += imports_package(facts, package)
-    if not _in_package(facts.module, MCP_INTERFACE_PACKAGE):
+    if not (_in_package(facts.module, MCP_INTERFACE_PACKAGE) or _in_package(facts.module, MCP_WRITE_PACKAGE)):
         for package in MCP_PACKAGES:
             found += imports_package(facts, package)
     return found

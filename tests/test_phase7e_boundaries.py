@@ -57,7 +57,7 @@ GRANT_SURFACE = {
     "issue_grant": set(), "issue_confirmation_grant": set(), "request_grant": set(),
     "authorize_confirmation": {"baec_app/application/proposal_authorization.py"},
     "authorize_grant": {"baec_app/application/authority.py"},
-    "GrantExecutionFacade": set(), "GrantExecutionStore": set(),
+    "GrantExecutionFacade": set(), "GrantExecutionStore": {"baec_app/data/authorization_grants.py"},  # 7G split
     "ConfirmationExecutionService": {"baec_app/application/proposal_authorization.py"},
     "AuthorizationGrantStore": {"baec_app/data/authorization_grants.py"},
     "insert_confirmed_record": {"baec_app/data/repository.py"},
@@ -67,16 +67,17 @@ GRANT_TABLE_USERS = {"baec_app/data/authorization_grants.py", "baec_app/data/dat
 
 
 def test_no_grant_confirmation_or_mcp_write_surface_exists_yet():
-    assert not (REPO / "baec_app" / "mcp_write").exists()  # still absent until 7G
+    """Since 7G the write package exists (name kept for ID continuity); it defines no grant surface of its own."""
+    assert (REPO / "baec_app" / "mcp_write").is_dir()
     for name, allowed in GRANT_SURFACE.items():
         definers = set()
-        for package in PACKAGES:
+        for package in PACKAGES + ("mcp_write",):
             for path in _modules(package):
                 tree = ast.parse(path.read_text(encoding="utf-8"))
                 if name in {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.ClassDef))}:
                     definers.add(path.relative_to(REPO).as_posix())
         assert definers == allowed, name
-    writers = {path.relative_to(REPO).as_posix() for package in PACKAGES for path in _modules(package)
+    writers = {path.relative_to(REPO).as_posix() for package in PACKAGES + ("mcp_write",) for path in _modules(package)
                if "human_authorization_grant" in path.read_text(encoding="utf-8").split('"""', 2)[-1]}
     assert writers == GRANT_TABLE_USERS
 

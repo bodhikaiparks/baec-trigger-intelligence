@@ -44,7 +44,12 @@ from baec_app.application.errors import ApplicationError
 from baec_app.application.human_normalization import HUMAN_NORMALIZATION_VALIDATION_VERSION
 from baec_app.application.proposal_review import ReviewNotSaved, rebuild_reviewed_candidate
 from baec_app.data.ai_provenance import AiProvenanceStore
-from baec_app.data.authorization_grants import GRANT_ID_PATTERN, AuthorizationGrantStore, GrantRecord
+from baec_app.data.authorization_grants import (
+    GRANT_ID_PATTERN,
+    AuthorizationGrantStore,
+    GrantExecutionStore,
+    GrantRecord,
+)
 from baec_app.data.database import (
     PersistenceIntegrityError,
     RepositoryConflictError,
@@ -314,7 +319,7 @@ class ConfirmationExecutionService:
 
     def __init__(self, connection: sqlite3.Connection, *, clock: Clock) -> None:
         self._connection = connection
-        self._grants = AuthorizationGrantStore(connection)
+        self._grants = GrantExecutionStore(connection)  # execution-only: it cannot insert or re-issue a grant
         self._clock = clock
 
     def execute(self, grant_id: str) -> ConfirmationResult:

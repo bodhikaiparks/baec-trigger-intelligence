@@ -7,7 +7,7 @@ import inspect
 from pathlib import Path
 
 from baec_app.application.proposal_authorization import ConfirmationExecutionService, ProposalAuthorizationService
-from baec_app.data.authorization_grants import AuthorizationGrantStore
+from baec_app.data.authorization_grants import AuthorizationGrantStore, GrantExecutionStore
 
 REPO = Path(__file__).resolve().parents[1]
 GRANT_MODULES = ("baec_app.application.proposal_authorization", "baec_app.data.authorization_grants")
@@ -39,7 +39,9 @@ def test_the_ai_package_mapper_normalizer_and_mcp_core_cannot_issue_grants():
                  + _files("baec_app", "application", "human_normalization")):
         assert not _imports(path) & set(GRANT_MODULES), path.name
         assert not _calls(path) & {"authorize_confirmation", "add_grant", "authorize_grant", "execute"}, path.name
-    assert not (REPO / "baec_app" / "mcp_write").exists()
+    for path in _files("baec_app", "mcp_write"):  # since 7G: it may execute a grant, never issue one
+        assert "baec_app.data.authorization_grants" not in _imports(path), path.name
+        assert not _calls(path) & {"authorize_confirmation", "add_grant", "authorize_grant", "issue"}, path.name
 
 
 def test_review_rendering_and_accept_cannot_issue_grants():
@@ -65,8 +67,11 @@ def test_the_executor_holds_no_broad_repository_and_offers_only_execute(tmp_path
     connection = open_database(str(tmp_path / "x.sqlite3"))
     try:
         executor = ConfirmationExecutionService(connection, clock=FixedClock())
-        assert {type(v).__name__ for v in vars(executor).values()} == {"Connection", "AuthorizationGrantStore",
+        # Since 7G the executor holds only the execution-only grant capability, never the issuance-capable store.
+        assert {type(v).__name__ for v in vars(executor).values()} == {"Connection", "GrantExecutionStore",
                                                                        "FixedClock"}
+        assert {n for n in dir(GrantExecutionStore) if not n.startswith("_")} == {
+            "get_grant", "lifecycle", "record_confirmation"}
         assert {n for n in dir(ConfirmationExecutionService) if not n.startswith("_")} == {"execute"}
         assert {n for n in dir(ProposalAuthorizationService) if not n.startswith("_")} == {
             "authorize_confirmation", "authorization_status"}

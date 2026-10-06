@@ -7,6 +7,9 @@ ACCEPTED review revision. It expires 15 minutes after issuance (an IMPLEMENTATIO
 * Grant rows are append-only. Status is never a column: it is derived from the rows that reference a grant
   (a consumption, a supersession, or a successor grant) and, for expiry, from a clock the caller supplies.
   Nothing here reads the clock, and no trigger or index evaluates the current time.
+* Two capabilities. GrantExecutionStore (get_grant, lifecycle, record_confirmation) is all the executor holds;
+  it cannot insert a grant. AuthorizationGrantStore extends it with add_grant and the per-revision and
+  per-proposal reads, for the human-authorization path only.
 * add_grant inserts one grant in its own transaction. record_confirmation inserts the confirmation link and the
   consumption inside the caller's open transaction, which must also hold the confirmed BAEC and its
   authorization (design §14); it never commits.
@@ -147,38 +150,22 @@ _COLUMNS = ("grant_id", "account_id", "interaction_id", "artifact_id", "proposal
             "grant_format", "issuing_surface")
 
 
-class AuthorizationGrantStore:
-    """SQL for grants, their lifecycle reads, and the confirmation link and consumption. No other write."""
+class GrantExecutionStore:
+    """The execution-only grant capability: read one grant and its lifecycle, and record its confirmation.
+
+    It has no way to insert, re-issue, or supersede a grant. ConfirmationExecutionService, and so the Phase 7G
+    MCP write server, holds only this.
+    """
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         if type(connection) is not sqlite3.Connection:
-            raise PersistenceError("AuthorizationGrantStore requires a sqlite3.Connection")
+            raise PersistenceError(f"{type(self).__name__} requires a sqlite3.Connection")
         if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
-            raise PersistenceError("AuthorizationGrantStore requires foreign key enforcement")
+            raise PersistenceError(f"{type(self).__name__} requires foreign key enforcement")
         require_current_schema(connection)
         self._db = connection
 
-    @contextmanager
-    def _write(self) -> Iterator[None]:
-        try:
-            with transaction(self._db):
-                yield
-        except sqlite3.IntegrityError as error:
-            raise RepositoryConflictError(f"the database refused the write: {error}") from error
-
-    # --- writes -------------------------------------------------------------------------------
-
-    def add_grant(self, grant: GrantRecord) -> None:
-        """Insert one grant. The schema refuses a grant without an ACCEPTED latest revision, or a second live one."""
-        if type(grant) is not GrantRecord:
-            raise RecordValidationError("add_grant requires a GrantRecord")
-        if not grant.binding_is_intact():
-            raise RecordValidationError("the grant digest does not cover its binding")
-        values = tuple(encode_datetime(getattr(grant, c)) if c in ("issued_at", "expires_at") else getattr(grant, c)
-                       for c in _COLUMNS)
-        with self._write():
-            self._db.execute(f"INSERT INTO human_authorization_grants ({', '.join(_COLUMNS)}) "
-                             f"VALUES ({', '.join('?' for _ in _COLUMNS)})", values)
+    # --- the one write: inside the caller's transaction ------------------------------------------
 
     def record_confirmation(self, grant: GrantRecord, *, authorization_id: int, consumed_at: datetime) -> None:
         """Insert the confirmation link and the consumption inside the caller's open transaction. Never commits."""
@@ -206,16 +193,6 @@ class AuthorizationGrantStore:
         values["issued_at"], values["expires_at"] = decode_datetime(values["issued_at"]), decode_datetime(values["expires_at"])
         return GrantRecord(**values)
 
-    def grants_for_revision(self, review_revision_id: str) -> tuple[GrantRecord, ...]:
-        ids = self._db.execute("SELECT grant_id FROM human_authorization_grants WHERE review_revision_id = ? "
-                               "ORDER BY issue_sequence", (review_revision_id,)).fetchall()
-        return tuple(self.get_grant(row[0]) for row in ids)
-
-    def grants_for_proposal(self, proposal_id: str) -> tuple[GrantRecord, ...]:
-        ids = self._db.execute("SELECT grant_id FROM human_authorization_grants WHERE proposal_id = ? ORDER BY rowid",
-                               (proposal_id,)).fetchall()
-        return tuple(self.get_grant(row[0]) for row in ids)
-
     def lifecycle(self, grant_id: str) -> GrantLifecycle:
         consumed = self._db.execute("SELECT baec_id FROM human_authorization_grant_consumptions WHERE grant_id = ?",
                                     (grant_id,)).fetchone()
@@ -225,3 +202,43 @@ class AuthorizationGrantStore:
                                      (grant_id,)).fetchone()
         return GrantLifecycle(consumed[0] if consumed else None, superseded[0] if superseded else None,
                               successor[0] if successor else None)
+
+
+class AuthorizationGrantStore(GrantExecutionStore):
+    """The issuance-capable grant store: everything the execution store has, plus inserting a grant and the
+    per-revision and per-proposal reads that issuance and status need. Held only by the human-authorization
+    path (ProposalAuthorizationService), never by the executor."""
+
+    @contextmanager
+    def _write(self) -> Iterator[None]:
+        try:
+            with transaction(self._db):
+                yield
+        except sqlite3.IntegrityError as error:
+            raise RepositoryConflictError(f"the database refused the write: {error}") from error
+
+    # --- writes -------------------------------------------------------------------------------
+
+    def add_grant(self, grant: GrantRecord) -> None:
+        """Insert one grant. The schema refuses a grant without an ACCEPTED latest revision, or a second live one."""
+        if type(grant) is not GrantRecord:
+            raise RecordValidationError("add_grant requires a GrantRecord")
+        if not grant.binding_is_intact():
+            raise RecordValidationError("the grant digest does not cover its binding")
+        values = tuple(encode_datetime(getattr(grant, c)) if c in ("issued_at", "expires_at") else getattr(grant, c)
+                       for c in _COLUMNS)
+        with self._write():
+            self._db.execute(f"INSERT INTO human_authorization_grants ({', '.join(_COLUMNS)}) "
+                             f"VALUES ({', '.join('?' for _ in _COLUMNS)})", values)
+
+    # --- reads --------------------------------------------------------------------------------
+
+    def grants_for_revision(self, review_revision_id: str) -> tuple[GrantRecord, ...]:
+        ids = self._db.execute("SELECT grant_id FROM human_authorization_grants WHERE review_revision_id = ? "
+                               "ORDER BY issue_sequence", (review_revision_id,)).fetchall()
+        return tuple(self.get_grant(row[0]) for row in ids)
+
+    def grants_for_proposal(self, proposal_id: str) -> tuple[GrantRecord, ...]:
+        ids = self._db.execute("SELECT grant_id FROM human_authorization_grants WHERE proposal_id = ? ORDER BY rowid",
+                               (proposal_id,)).fetchall()
+        return tuple(self.get_grant(row[0]) for row in ids)

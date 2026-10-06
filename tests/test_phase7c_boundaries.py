@@ -163,8 +163,9 @@ def test_the_bridge_store_imports_only_the_data_layer_and_the_standard_library()
 
 
 def test_phase5_mcp_is_untouched_and_no_write_package_exists():
-    assert not (REPO / "baec_app" / "mcp_write").exists()
-    for path in sorted((REPO / "baec_app" / "mcp").glob("*.py")):
+    """Since 7G the separate write package exists (name kept for ID continuity); neither MCP package names the bridge."""
+    assert (REPO / "baec_app" / "mcp_write").is_dir()
+    for path in sorted((REPO / "baec_app" / "mcp").glob("*.py")) + sorted((REPO / "baec_app" / "mcp_write").glob("*.py")):
         text = path.read_text(encoding="utf-8")
         for name in ("proposal_bridge", "AI_DRAFT", "AiDraftNotPermitted") + BRIDGE_TABLES:
             assert name not in text, (path.name, name)
