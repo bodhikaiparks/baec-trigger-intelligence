@@ -153,14 +153,17 @@ def a9_no_mcp_link(module, source):
     return found
 
 
-# Phase 7D: the one named exception to A9. Exactly this application module may import exactly the pure
-# verification façade (and names from it). Every other lower-layer import of baec_app.ai stays forbidden.
+# The named exceptions to A9, each one application module to exactly one pure AI module (and names from it).
+# Phase 7D: the mapper may use the verification façade. Phase 7F-A: the human-normalization contract may use
+# the grounding primitives. Every other lower-layer import of baec_app.ai stays forbidden.
 A9_VERIFICATION_EXCEPTION = ("baec_app.application.ai_proposal_mapping", "baec_app.ai.verification")
+A9_GROUNDING_EXCEPTION = ("baec_app.application.human_normalization", "baec_app.ai.grounding")
+A9_EXCEPTIONS = dict((A9_VERIFICATION_EXCEPTION, A9_GROUNDING_EXCEPTION))
 
 
 def _a9_excepted(module, name):
-    importer, facade = A9_VERIFICATION_EXCEPTION
-    return module == importer and (name == facade or name.startswith(facade + "."))
+    allowed = A9_EXCEPTIONS.get(module)
+    return allowed is not None and (name == allowed or name.startswith(allowed + "."))
 
 
 def lower_layers_never_import_ai(module, source):
@@ -224,14 +227,15 @@ def test_production_ai_code_obeys_the_rule(rule):
 
 
 def test_no_lower_layer_mcp_or_script_imports_the_ai_package():
-    """A9, with one named Phase 7D exception: application.ai_proposal_mapping -> ai.verification only."""
+    """A9, with exactly two named exceptions: application.ai_proposal_mapping -> ai.verification (Phase 7D)
+    and application.human_normalization -> ai.grounding (Phase 7F-A)."""
     others = (_modules(REPO_ROOT / "baec_app" / "domain") + _modules(REPO_ROOT / "baec_app" / "data")
               + _modules(REPO_ROOT / "baec_app" / "application") + _modules(REPO_ROOT / "baec_app" / "mcp")
               + _modules(REPO_ROOT / "scripts"))
     assert others and [m for module, source in others for m in lower_layers_never_import_ai(module, source)] == []
     importers = {module for module, source in others
                  for name, _ in _imported(module, source) if name.startswith("baec_app.ai")}
-    assert importers == {A9_VERIFICATION_EXCEPTION[0]}  # exactly one lower-layer module reaches the AI package
+    assert importers == set(A9_EXCEPTIONS)  # exactly these lower-layer modules reach the AI package
 
 
 def test_the_package_root_does_not_re_export_the_provider():
@@ -304,6 +308,22 @@ VIOLATIONS = {
     "A9 second application module imports verification": ("baec_app.application.facades",
                                                            "from baec_app.ai.verification import verify_persisted_extraction",
                                                            lower_layers_never_import_ai),
+    "A9 human normalization imports validation": ("baec_app.application.human_normalization",
+                                                  "from baec_app.ai.validation import validate_extraction",
+                                                  lower_layers_never_import_ai),
+    "A9 human normalization imports verification": ("baec_app.application.human_normalization",
+                                                    "from baec_app.ai.verification import verify_persisted_extraction",
+                                                    lower_layers_never_import_ai),
+    "A9 human normalization imports the service": ("baec_app.application.human_normalization",
+                                                   "import baec_app.ai.service", lower_layers_never_import_ai),
+    "A9 human normalization imports a grounding look-alike": ("baec_app.application.human_normalization",
+                                                              "import baec_app.ai.grounding_extra",
+                                                              lower_layers_never_import_ai),
+    "A9 another application module imports grounding": ("baec_app.application.facades",
+                                                        "from baec_app.ai.grounding import tokenize",
+                                                        lower_layers_never_import_ai),
+    "A9 the mapper imports grounding": ("baec_app.application.ai_proposal_mapping",
+                                        "from baec_app.ai.grounding import tokenize", lower_layers_never_import_ai),
     "A9 data layer imports verification": ("baec_app.data.proposal_bridge",
                                            "from baec_app.ai.verification import verify_persisted_extraction",
                                            lower_layers_never_import_ai),
@@ -344,6 +364,9 @@ ALLOWED = {
     "A9 the named verification exception": ("baec_app.application.ai_proposal_mapping",
                                             "from baec_app.ai.verification import verify_persisted_extraction",
                                             lower_layers_never_import_ai),
+    "A9 the named grounding exception": ("baec_app.application.human_normalization",
+                                         "from baec_app.ai.grounding import Magnitude, tokenize",
+                                         lower_layers_never_import_ai),
 }
 
 
