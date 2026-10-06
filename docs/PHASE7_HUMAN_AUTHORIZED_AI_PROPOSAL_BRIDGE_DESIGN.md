@@ -1,7 +1,7 @@
 # Phase 7 Design: Human-Authorized AI Proposal Bridge
 
-> **Approved design (Phase 7B). Not implemented.**
-> Nothing in this document exists in code, tests, or schema yet. It records the approved Phase 7 architecture. The Research Contract wording in §19 remains proposed and not applied.
+> **Approved design — implemented and verified.**
+> Phase 7 final verification is recorded in `docs/PHASE7_FINAL_VERIFICATION.md`. Sections 1–22 are the approved Phase 7B design text, kept as written; where the implementation differs, the implementation-clarification sections at the end of this document record it. The Research Contract wording in §19 remains proposed and **NOT APPLIED**.
 
 **Project:** BAEC Trigger Intelligence
 **Baseline:** `phase-6-ai-reasoning` (commit `0f1b22e`), schema version 6. Phase 6 and the Phase 7A survey are closed.
