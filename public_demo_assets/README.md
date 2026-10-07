@@ -2,8 +2,13 @@
 
 Purpose: authentic prerecorded synthetic AI output for public demonstration (BAEC Engine 1).
 
-This directory may hold exactly one recording, `baec-engine1-harbor-recording.json`
-(format `baec-public-demo-recording/v1`). It is not seed data, not a test fixture, and not a live-evaluation report.
+This directory holds exactly three files:
+
+- `README.md` (this file);
+- `baec-engine1-harbor-recording.json`, the one recording (format `baec-public-demo-recording/v1`). It is not seed
+  data, not a test fixture, and not a live-evaluation report;
+- `BAEC_Engine_1_Research_and_Technical_Brief.pdf`, the approved Research and Technical Brief, offered unchanged as
+  the landing page's Research Brief download.
 
 - **Source.** The canonical synthetic interaction `INT-HARBOR-001` (account `ACC-HARBOR`) from `data/demo`. No real
   customer, company, contact, pricing, or health information.
@@ -16,6 +21,9 @@ This directory may hold exactly one recording, `baec-engine1-harbor-recording.js
   in-memory database. No model is called while the demo runs.
 - **Integrity.** The package digest gives repository-asset integrity only. It does not prove that a file was never
   copied between systems.
+
+The full BAEC working paper is unpublished and is not packaged with the public demo. Readers interested in reviewing
+the manuscript or providing feedback may contact the author directly.
 
 This recording is one successful synthetic demonstration artifact. It does not change Phase 6 behavioral
 eligibility, does not qualify a default model, and does not validate the BAEC theory. The model it names is

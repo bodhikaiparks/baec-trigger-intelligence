@@ -36,7 +36,8 @@ def test_streamlit_is_never_imported_outside_the_interface_layer(package):
 def test_streamlit_is_imported_only_by_the_review_page():
     importers = {path.relative_to(REPO).as_posix() for package in PACKAGES for path in _modules(package)
                  if any(n == "streamlit" or n.startswith("streamlit.") for n in _imports(path))}
-    assert importers == {"baec_app/interfaces/review_page.py"}
+    # Engine 1 public demo: the second human-interaction page (baec_app/interfaces/public_demo.py).
+    assert importers == {"baec_app/interfaces/review_page.py", "baec_app/interfaces/public_demo.py"}
 
 
 def test_the_interface_layer_reaches_neither_data_nor_ai_nor_mcp():

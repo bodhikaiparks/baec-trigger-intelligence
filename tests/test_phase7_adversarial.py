@@ -154,7 +154,9 @@ def test_a_valid_grant_is_required_and_only_the_human_authorization_path_issues_
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in callers:
                 callers[node.func.attr].add(path.relative_to(REPO).as_posix())
-    assert callers == {"authorize_confirmation": {"baec_app/interfaces/review_page.py"},
+    # Engine 1 public demo: a second explicit human-facing page asks for a grant; it never executes one.
+    assert callers == {"authorize_confirmation": {"baec_app/interfaces/review_page.py",
+                                                  "baec_app/interfaces/public_demo.py"},
                        "add_grant": {"baec_app/application/proposal_authorization.py"},
                        "issue": {"baec_app/application/proposal_authorization.py"}}
 

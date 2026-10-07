@@ -1,0 +1,14 @@
+# BAEC Engine 1 public demo. No secrets belong in this repository (.streamlit/secrets.toml is git-ignored).
+
+[browser]
+# No usage statistics are sent to Streamlit.
+gatherUsageStats = false
+
+[theme]
+# A fixed professional light theme, independent of the visitor's system theme.
+base = "light"
+primaryColor = "#2563EB"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F7FA"
+textColor = "#1F2937"
+borderColor = "#E5E7EB"

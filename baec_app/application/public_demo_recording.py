@@ -40,6 +40,7 @@ from baec_app.application.ai_proposal_mapping import (
     canonical_text,
     verify_artifact,
 )
+from baec_app.application.context import SystemClock
 from baec_app.application.errors import ApplicationError
 from baec_app.data.ai_provenance import (
     AiArtifactExcerptRecord,
@@ -54,7 +55,7 @@ from baec_app.data.ai_provenance import (
     AiTerminalOutcome,
     sha256_text,
 )
-from baec_app.data.database import PersistenceError, open_database
+from baec_app.data.database import PersistenceError, connect, open_database, require_current_schema
 from baec_app.data.records import RecordValidationError, SourceInteraction
 from baec_app.data.repository import Repository, decode_datetime, encode_datetime
 from baec_app.data.seed import load_seed_inputs
@@ -389,3 +390,86 @@ def load_public_demo_database() -> sqlite3.Connection:
     package = _parse_package(text)
     _require_authentic(package.body)
     return _seed_ephemeral_database(package)
+
+
+# --- per-visitor demo sessions -------------------------------------------------------------------------------------
+#
+# A Streamlit session runs each rerun on a new script thread, and a sqlite3 connection may only be used on the thread
+# that created it. A session therefore keeps no connection: it keeps the serialized image of its own in-memory
+# database (bytes, in that visitor's session state only). Each rerun opens a fresh :memory: connection on its own
+# thread, deserializes the image, uses the unchanged application services, snapshots, and closes. Nothing is
+# written to disk, nothing is shared between visitors, and no connection outlives one script run.
+
+DEMO_MAPPER_LABEL = "public-demo-session"
+SESSION_UNSUPPORTED = ("This Python and SQLite build cannot serialize an in-memory database (Python 3.11 or later "
+                       "with SQLite serialization support is required). The demo does not fall back to files.")
+
+
+def session_support_problem(connection_type: type = sqlite3.Connection) -> str | None:
+    """None when per-session in-memory images work here; otherwise a plain explanation. Never touches the disk."""
+    if not all(callable(getattr(connection_type, name, None)) for name in ("serialize", "deserialize")):
+        return SESSION_UNSUPPORTED
+    try:
+        probe = connection_type(":memory:")
+        try:
+            probe.execute("CREATE TABLE probe (value INTEGER)")
+            probe.execute("INSERT INTO probe VALUES (1)")
+            image = probe.serialize()
+        finally:
+            probe.close()
+        check = connection_type(":memory:")
+        try:
+            check.deserialize(image)
+            if check.execute("SELECT value FROM probe").fetchall() != [(1,)]:
+                return SESSION_UNSUPPORTED
+        finally:
+            check.close()
+    except (sqlite3.Error, AttributeError, TypeError, ValueError, OverflowError):
+        return SESSION_UNSUPPORTED
+    return None
+
+
+@dataclass(frozen=True)
+class DemoSession:
+    """One visitor's demo: the serialized image of their private in-memory database, and the AI_DRAFT under review."""
+
+    image: bytes
+    proposal_id: str
+
+
+def start_demo_session() -> DemoSession:
+    """A fresh session: the verified recording replayed into a new :memory: database, mapped to its AI_DRAFT by the
+    unchanged Phase 7D mapper, then serialized. Nothing else is created: no review, grant, or BAEC."""
+    connection = load_public_demo_database()
+    try:
+        [(artifact_id,)] = connection.execute("SELECT artifact_id FROM ai_artifacts").fetchall()
+        mapped = AiProposalMappingService(connection, clock=SystemClock()).map_artifact(artifact_id,
+                                                                                        created_by=DEMO_MAPPER_LABEL)
+        return DemoSession(connection.serialize(), mapped.proposal.proposal_id)
+    finally:
+        connection.close()
+
+
+def open_demo_database(image: bytes) -> sqlite3.Connection:
+    """A new :memory: connection on the calling thread holding exactly this session image. The caller closes it."""
+    if type(image) is not bytes or not image:
+        raise RecordingRejected("malformed")
+    connection = connect(":memory:")  # the data layer's connection: foreign keys enforced
+    try:
+        connection.deserialize(image)
+        require_current_schema(connection)
+        if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1 or \
+                connection.execute("PRAGMA database_list").fetchone()[2] != "":
+            raise RecordingRejected("malformed")
+    except (PersistenceError, sqlite3.Error):
+        connection.close()
+        raise RecordingRejected("malformed") from None
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def snapshot_demo_database(connection: sqlite3.Connection) -> bytes:
+    """The serialized image of a session database, to keep in that visitor's session state."""
+    return connection.serialize()

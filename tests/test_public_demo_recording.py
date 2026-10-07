@@ -423,9 +423,24 @@ def provenance_json_files(root: Path) -> list[str]:
     return found
 
 
-def test_the_asset_directory_holds_only_its_readme_and_the_one_approved_recording():
-    allowed = {"README.md", module.RECORDING_FILE_NAME}
-    assert {p.name for p in (REPO / "public_demo_assets").iterdir()} <= allowed
+ALLOWED_ASSETS = {"README.md", "baec-engine1-harbor-recording.json", "BAEC_Engine_1_Research_and_Technical_Brief.pdf"}
+
+
+def asset_violations(directory: Path) -> list[str]:
+    """Anything in the public asset directory other than the three approved files (no pattern is allowed)."""
+    return sorted(p.name for p in directory.iterdir() if p.name not in ALLOWED_ASSETS or not p.is_file())
+
+
+def test_the_asset_directory_holds_only_its_readme_and_the_one_approved_recording(tmp_path):
+    assert ALLOWED_ASSETS == {"README.md", module.RECORDING_FILE_NAME, "BAEC_Engine_1_Research_and_Technical_Brief.pdf"}
+    assert asset_violations(REPO / "public_demo_assets") == []
+    # Negative control: no other PDF, JSON, or file is allowed, whatever its name looks like.
+    for name in ("BAEC_Engine_1_Demo_Guide.pdf", "notes.pdf", "other-recording.json", "BAEC_Engine_1_Final.pdf",
+                 "baec-engine1-harbor-recording_v2.json"):
+        (tmp_path / name).write_bytes(b"x")
+    (tmp_path / "README.md").write_text("ok", encoding="utf-8")
+    assert asset_violations(tmp_path) == sorted(["BAEC_Engine_1_Demo_Guide.pdf", "notes.pdf", "other-recording.json",
+                                                 "BAEC_Engine_1_Final.pdf", "baec-engine1-harbor-recording_v2.json"])
     readme = (REPO / "public_demo_assets" / "README.md").read_text(encoding="utf-8")
     assert module.RECORDING_PURPOSE in readme and "does not qualify a default model" in readme
 
@@ -451,7 +466,7 @@ def test_the_loader_only_ever_opens_an_in_memory_database():
     tree = ast.parse((REPO / "baec_app" / "application" / "public_demo_recording.py").read_text(encoding="utf-8"))
     opens = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.Call)
              and getattr(n.func, "id", getattr(n.func, "attr", "")) in ("open_database", "connect")]
-    assert opens == ["open_database(':memory:')"]
+    assert sorted(opens) == ["connect(':memory:')", "open_database(':memory:')"]  # in-memory only
     names = {getattr(n, "id", getattr(n, "attr", None)) for n in ast.walk(tree)}
     assert not names & {"environ", "getenv", "urlopen", "socket", "AnthropicExtractionProvider",
                         "open_extraction_runtime", "seed_database"}
