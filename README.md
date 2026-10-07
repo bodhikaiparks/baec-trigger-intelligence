@@ -2,6 +2,10 @@
 
 **BAEC Engine 1: Capture + Verification**
 
+Version 1.0
+
+**Live demo:** https://baec-engine1.streamlit.app
+
 Research prototype for preserving buyer-articulated conditions that may make future evaluation worthwhile.
 
 **Remember what the buyer said mattered, then watch for it.**
@@ -48,7 +52,7 @@ The public Research and Technical Brief is packaged with the demo at:
 
 `public_demo_assets/BAEC_Engine_1_Research_and_Technical_Brief.pdf`
 
-It remains Release Candidate 0.9 until final deployment metadata and public QA are complete.
+It is the Version 1.0 Brief (7 October 2026) and records the release facts, including the live-QA software baseline and the software verification result.
 
 ## Run locally
 
@@ -78,7 +82,7 @@ A detected signal or AI suggestion does not establish that a buyer is evaluating
 
 ## Project status
 
-BAEC Engine 1: Capture + Verification
+BAEC Engine 1: Capture + Verification, Version 1.0
 
 Public research prototype
 

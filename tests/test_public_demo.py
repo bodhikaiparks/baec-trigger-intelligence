@@ -1377,7 +1377,7 @@ def test_the_successful_path_shows_the_value_and_the_deliberate_separation():
 # --- final public release gate -------------------------------------------------------------------------------------------
 
 BRIEF = REPO / "public_demo_assets" / "BAEC_Engine_1_Research_and_Technical_Brief.pdf"
-BRIEF_SHA256 = "229497ee2eba8c1792758a9102cf81baff45da043f13f4994a79bb3369d56c0d"
+BRIEF_SHA256 = "07998939b75c6cc00957651428dbad1449059826ab2f3be73c14b6bb5f2ab3e9"
 
 
 def _sha(path: Path) -> str:
@@ -1537,8 +1537,10 @@ def test_the_canonical_document_structure_has_one_research_contract():
     assert "README.md" in files and readme.startswith("# BAEC Trigger Intelligence\n")
     assert "unpublished conceptual working paper" in readme and "intentionally not included" in readme
     for claim in ("under review", "peer reviewed", "peer-reviewed", "accepted for publication", "published in",
-                  "streamlit.app", "http://", "https://", "\u2014"):
-        assert claim not in readme.lower(), claim  # no review status, no premature public URL, no em dash
+                  "\u2014", "release candidate"):
+        assert claim not in readme.lower(), claim  # no review status, no stale release status, no em dash
+    assert "Version 1.0" in readme and "https://baec-engine1.streamlit.app" in readme
+    assert re.findall(r"https?://\S+", readme) == ["https://baec-engine1.streamlit.app"]  # the only link
     assert sorted(os.listdir(REPO / "public_demo_assets")) == [
         "BAEC_Engine_1_Research_and_Technical_Brief.pdf", "README.md", "baec-engine1-harbor-recording.json"]
     for name in files:  # no ambiguous release-facing variants anywhere in the repository
