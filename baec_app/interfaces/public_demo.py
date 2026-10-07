@@ -516,7 +516,7 @@ def _landing() -> None:
     st.markdown(f"### {LANDING_STATEMENT}")
     st.markdown(LANDING_TEXT)
     for column, (heading, text) in zip(st.columns(3), VALUE_CARDS):
-        with column.container(border=True):
+        with column.container(border=True, height="stretch"):  # equal height per row
             st.markdown(f"**{heading}**")
             st.caption(text)
     with st.container(horizontal=True):
@@ -531,7 +531,7 @@ def _landing() -> None:
     st.divider()
     st.markdown(f"**{LANDING_LEVELS_HEADING}**")
     for column, (heading, text) in zip(st.columns(2), (LANDING_GUIDED, LANDING_INSPECT)):
-        with column.container(border=True):
+        with column.container(border=True, height="stretch"):  # equal height per row
             st.markdown(f"**{heading}**")
             st.caption(text)
             if heading == LANDING_INSPECT[0]:

@@ -1296,6 +1296,13 @@ def test_the_landing_page_leads_with_the_value_then_the_experience():
         assert f"**{heading}**" in markdown and text in captions
     order = [markdown.index(x) for x in ("**Capture**", "**Start simple. Go deeper anytime.**")]
     assert order == sorted(order)  # value before the experience explanation
+    # Sibling cards share one height per row (content-sized when columns stack on narrow screens).
+    tree = ast.parse(PAGE.read_text(encoding="utf-8"))
+    [landing] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_landing"]
+    cards = [ast.unparse(n) for n in ast.walk(landing) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "container"
+             and any(k.arg == "border" for k in n.keywords)]
+    assert cards == ["column.container(border=True, height='stretch')"] * 2
     for claim in ("revenue", "conversion", "forecast", "accuracy", "proven", "increase sales"):
         pattern = re.compile(rf"\b{claim}\b", re.IGNORECASE)
         assert not pattern.search(page.LANDING_TEXT) and not [c for c in captions if pattern.search(c)], claim
