@@ -226,4 +226,5 @@ def test_the_mapping_is_not_exported_to_interfaces_or_mcp_yet():
             if any("ai_proposal_mapping" in name for name in names):
                 users.append(path.relative_to(root).as_posix())
     assert users == ["application/proposal_authorization.py",  # Phase 7F-B: lineage re-verification at execution
-                     "application/proposal_review.py"]  # Phase 7E: the review layer re-verifies through it
+                     "application/proposal_review.py",  # Phase 7E: the review layer re-verifies through it
+                     "application/public_demo_recording.py"]  # public demo: E1-E6 on the replayed recording

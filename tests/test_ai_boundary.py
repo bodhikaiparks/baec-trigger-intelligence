@@ -159,9 +159,15 @@ def a9_no_mcp_link(module, source):
 A9_VERIFICATION_EXCEPTION = ("baec_app.application.ai_proposal_mapping", "baec_app.ai.verification")
 A9_GROUNDING_EXCEPTION = ("baec_app.application.human_normalization", "baec_app.ai.grounding")
 A9_EXCEPTIONS = dict((A9_VERIFICATION_EXCEPTION, A9_GROUNDING_EXCEPTION))
+# Public demo release: the one manual, paid, one-shot recording utility runs the unchanged Phase 6 extraction through
+# its composition and the production provider. Exactly this script and exactly these two modules.
+A9_RECORDER_EXCEPTION = ("scripts.record_public_demo_artifact",
+                         ("baec_app.ai.composition", "baec_app.ai.anthropic_provider"))
 
 
 def _a9_excepted(module, name):
+    if module == A9_RECORDER_EXCEPTION[0]:
+        return any(name == m or name.startswith(m + ".") for m in A9_RECORDER_EXCEPTION[1])  # these two only
     allowed = A9_EXCEPTIONS.get(module)
     return allowed is not None and (name == allowed or name.startswith(allowed + "."))
 
@@ -228,14 +234,15 @@ def test_production_ai_code_obeys_the_rule(rule):
 
 def test_no_lower_layer_mcp_or_script_imports_the_ai_package():
     """A9, with exactly two named exceptions: application.ai_proposal_mapping -> ai.verification (Phase 7D)
-    and application.human_normalization -> ai.grounding (Phase 7F-A)."""
+    and application.human_normalization -> ai.grounding (Phase 7F-A); plus the one manual public-demo recording
+    utility, scripts.record_public_demo_artifact -> ai.composition and ai.anthropic_provider only."""
     others = (_modules(REPO_ROOT / "baec_app" / "domain") + _modules(REPO_ROOT / "baec_app" / "data")
               + _modules(REPO_ROOT / "baec_app" / "application") + _modules(REPO_ROOT / "baec_app" / "mcp")
               + _modules(REPO_ROOT / "scripts"))
     assert others and [m for module, source in others for m in lower_layers_never_import_ai(module, source)] == []
     importers = {module for module, source in others
                  for name, _ in _imported(module, source) if name.startswith("baec_app.ai")}
-    assert importers == set(A9_EXCEPTIONS)  # exactly these lower-layer modules reach the AI package
+    assert importers == set(A9_EXCEPTIONS) | {A9_RECORDER_EXCEPTION[0]}  # exactly these reach the AI package
 
 
 def test_the_package_root_does_not_re_export_the_provider():

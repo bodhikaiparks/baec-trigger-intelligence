@@ -201,14 +201,30 @@ def test_no_database_file_is_part_of_the_repository():
 def test_no_production_or_seed_source_can_introduce_ai_provenance():
     seed_sources = [REPO / "baec_app" / "data" / "seed.py", *sorted((REPO / "scripts").glob("*.py")),
                     *sorted((REPO / "data").rglob("*.json"))]
+    # Public demo release: the one manual recording utility runs a real Phase 6 extraction, so it may name the
+    # provider and read its run back through AiProvenanceStore. Nothing else on this list, and no other script.
+    recorder = REPO / "scripts" / "record_public_demo_artifact.py"
     for path in seed_sources:
         text = path.read_text(encoding="utf-8")
+        allowed = {"provider", "AiProvenanceStore"} if path == recorder else set()
         for name in ("ai_runs", "ai_artifacts", "AiProvenanceStore", "record_terminal_outcome", "ProposalBridgeStore",
                      "add_proposal", "FakeProvider", "provider", "FIXTURE-") + BRIDGE_TABLES:
-            assert name not in text, (path.relative_to(REPO).as_posix(), name)
+            assert name in allowed or name not in text, (path.relative_to(REPO).as_posix(), name)
+    # The public-demo loader names the fixture markers only to refuse them: every "FIXTURE-" literal it holds must
+    # sit inside its FIXTURE_MARKERS refusal tuple.
+    loader = REPO / "baec_app" / "application" / "public_demo_recording.py"
     for path in sorted((REPO / "baec_app").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        assert "FIXTURE-" not in text and "class FakeProvider" not in text, path.name
+        assert "class FakeProvider" not in text, path.name
+        if path != loader:
+            assert "FIXTURE-" not in text, path.name
+            continue
+        tree = ast.parse(text)
+        [markers] = [n.value for n in tree.body if isinstance(n, ast.Assign)
+                     and [t.id for t in n.targets if isinstance(t, ast.Name)] == ["FIXTURE_MARKERS"]]
+        inside = {id(c) for c in ast.walk(markers) if isinstance(c, ast.Constant)}
+        assert not [c for c in ast.walk(tree) if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                    and "FIXTURE-" in c.value and id(c) not in inside], path.name
 
 
 def test_the_canonical_seed_has_no_ai_provenance_and_no_bridge_rows():
