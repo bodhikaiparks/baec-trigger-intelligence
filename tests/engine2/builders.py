@@ -105,8 +105,9 @@ def ledger(active_plan=None, observations=None, **kw) -> EvidenceLedger:
 def review(led: EvidenceLedger | None = None, **changes) -> HumanCorrespondenceReview:
     led = led or ledger()
     p = led.plan
-    signal = SignalCandidate("SC-T", p.monitoring_plan_id, tuple(sorted(led.observation_ids)), "REVIEWER-T")
-    candidate = CorrespondenceCandidate("CC-T", p.baec_id, p.monitoring_plan_id, (signal,))
+    observations = tuple(sorted(led.observations, key=lambda o: o.observation_id))
+    signal = SignalCandidate("SC-T", p.monitoring_plan_id, p.plan_version, observations, "REVIEWER-T")
+    candidate = CorrespondenceCandidate("CC-T", p.baec_id, p.monitoring_plan_id, p.plan_version, (signal,))
     kwargs = dict(review_id="REV-T", candidate=candidate, ledger=led, findings=findings(), checks=checks(),
                   sufficiency=SufficiencyFinding.YES, reviewer="REVIEWER-T", reviewed_at=T0,
                   baec_revalidation_required=False, revalidation_triggers=())

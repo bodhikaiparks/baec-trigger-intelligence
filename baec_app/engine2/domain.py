@@ -187,6 +187,12 @@ def _optional_aware(value: object, field: str) -> None:
         _aware(value, field)
 
 
+def _plan_version(value: object, field: str) -> None:
+    """Exact Monitoring Plan version: a positive int, never a default and never inferred."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise Engine2ValidationError(f"{field} must be a positive integer")
+
+
 def _text_set(value: object, field: str, *, allow_empty: bool = True) -> None:
     if not isinstance(value, frozenset):
         raise Engine2ValidationError(f"{field} must be a frozenset")
@@ -280,8 +286,7 @@ class MonitoringPlan:
         for name in ("monitoring_plan_id", "baec_id", "condition_reference", "engine1_currentness_reference",
                      "authorized_by", "authorization_reference"):
             _text(getattr(self, name), f"MonitoringPlan.{name}")
-        if not isinstance(self.plan_version, int) or isinstance(self.plan_version, bool) or self.plan_version < 1:
-            raise Engine2ValidationError("MonitoringPlan.plan_version must be a positive integer")
+        _plan_version(self.plan_version, "MonitoringPlan.plan_version")
         _text_tuple(self.target_entities, "MonitoringPlan.target_entities", allow_empty=False)
         for name in ("required_dimensions", "not_applicable_dimensions"):
             value = getattr(self, name)
@@ -363,6 +368,10 @@ class ActiveMonitoringPlan:
     def monitoring_plan_id(self) -> str:
         return self.plan.monitoring_plan_id
 
+    @property
+    def plan_version(self) -> int:
+        return self.plan.plan_version
+
 
 def activate_monitoring_plan(plan: MonitoringPlan, reading: Engine1CurrentnessReading | None) -> ActiveMonitoringPlan:
     """Activate a plan, or raise MonitoringPlanActivationError (Stage A Section 4.3)."""
@@ -405,7 +414,8 @@ class Observation:
     """Raw captured source evidence with provenance (Stage A Section 7.1).
 
     Immutable. Holds no relevance judgment and no calculation. A correction or
-    retraction is a new Observation plus a Supersession, never an edit.
+    retraction is a new Observation plus a Supersession, never an edit. It
+    belongs to exactly one Monitoring Plan version: (monitoring_plan_id, plan_version).
 
     content_sha256 is verified on creation (fail closed): it must equal
     content_integrity_sha256(exact_evidence_content). It covers the stored text
@@ -414,6 +424,7 @@ class Observation:
 
     observation_id: str
     monitoring_plan_id: str
+    plan_version: int
     source_id: str
     source_type: str
     observed_at: datetime
@@ -431,6 +442,7 @@ class Observation:
         for name in ("observation_id", "monitoring_plan_id", "source_id", "source_type", "exact_evidence_content",
                      "source_locator", "acquisition_method", "authorization_reference", "evidence_event_id"):
             _text(getattr(self, name), f"Observation.{name}")
+        _plan_version(self.plan_version, "Observation.plan_version")
         _aware(self.observed_at, "Observation.observed_at")
         _optional_aware(self.published_at, "Observation.published_at")
         _optional_aware(self.effective_at, "Observation.effective_at")
@@ -474,6 +486,7 @@ def capture_observation(
     return Observation(
         observation_id=observation_id,
         monitoring_plan_id=active_plan.monitoring_plan_id,
+        plan_version=active_plan.plan_version,
         source_id=source_id,
         source_type=item.source_type,
         observed_at=item.received_at,
@@ -513,63 +526,113 @@ class Supersession:
 
 @dataclass(frozen=True)
 class RejectedSourceItem:
-    """Audit record of an item refused before Observation creation. Never evidence."""
+    """Audit record of an item refused during capture under one exact plan version.
+
+    Never an Observation, never evidence, never a finding or an outcome.
+    """
 
     item_id: str
+    monitoring_plan_id: str
+    plan_version: int
     reason: str
 
     def __post_init__(self) -> None:
         _text(self.item_id, "RejectedSourceItem.item_id")
+        _text(self.monitoring_plan_id, "RejectedSourceItem.monitoring_plan_id")
+        _plan_version(self.plan_version, "RejectedSourceItem.plan_version")
         _text(self.reason, "RejectedSourceItem.reason")
+
+
+def reject_source_item(active_plan: ActiveMonitoringPlan, item: SourceItem, reason: str) -> RejectedSourceItem:
+    """Record a capture refusal under the exact active plan version that refused it."""
+    _instance(active_plan, ActiveMonitoringPlan, "active_plan")
+    _instance(item, SourceItem, "item")
+    return RejectedSourceItem(item.item_id, active_plan.monitoring_plan_id, active_plan.plan_version, reason)
 
 
 # --- Signal and Correspondence Candidates (Stage A Sections 7.2, 8.1) --------
 
 
+def plan_key(record) -> tuple[str, int]:
+    """The exact (monitoring_plan_id, plan_version) a plan-scoped record belongs to."""
+    return (record.monitoring_plan_id, record.plan_version)
+
+
 @dataclass(frozen=True)
 class SignalCandidate:
-    """Observations selected as possibly relevant. Asserts no finding and nothing about the buyer."""
+    """Observations selected as possibly relevant. Asserts no finding and nothing about the buyer.
+
+    Scoped to one exact plan version; every Observation it holds must belong to
+    that same (monitoring_plan_id, plan_version).
+    """
 
     signal_candidate_id: str
     monitoring_plan_id: str
-    observation_ids: tuple[str, ...]
+    plan_version: int
+    observations: tuple[Observation, ...]
     selected_by: str
     possibly_relevant_dimensions: frozenset[CorrespondenceDimension] = frozenset()
 
     def __post_init__(self) -> None:
         _text(self.signal_candidate_id, "SignalCandidate.signal_candidate_id")
         _text(self.monitoring_plan_id, "SignalCandidate.monitoring_plan_id")
-        _text_tuple(self.observation_ids, "SignalCandidate.observation_ids", allow_empty=False)
+        _plan_version(self.plan_version, "SignalCandidate.plan_version")
+        if not isinstance(self.observations, tuple) or not self.observations:
+            raise Engine2ValidationError("SignalCandidate needs at least one Observation")
+        for o in self.observations:
+            _instance(o, Observation, "SignalCandidate.observations item")
+            if plan_key(o) != plan_key(self):
+                raise Engine2ValidationError(
+                    f"{o.observation_id} belongs to {o.monitoring_plan_id} v{o.plan_version}, not "
+                    f"{self.monitoring_plan_id} v{self.plan_version}; plan versions never mix")
+        ids = [o.observation_id for o in self.observations]
+        if len(set(ids)) != len(ids):
+            raise Engine2ValidationError("SignalCandidate.observations contains duplicates")
         _text(self.selected_by, "SignalCandidate.selected_by")
         if not isinstance(self.possibly_relevant_dimensions, frozenset) or not all(
             isinstance(d, CorrespondenceDimension) for d in self.possibly_relevant_dimensions
         ):
             raise Engine2ValidationError("SignalCandidate.possibly_relevant_dimensions must be a frozenset of dimensions")
 
+    @property
+    def observation_ids(self) -> tuple[str, ...]:
+        return tuple(o.observation_id for o in self.observations)
+
 
 @dataclass(frozen=True)
 class CorrespondenceCandidate:
-    """A hypothesis that Signal Candidates may correspond to one confirmed BAEC's condition."""
+    """A hypothesis that Signal Candidates may correspond to one confirmed BAEC's condition.
+
+    Scoped to one exact plan version; every Signal Candidate must match it.
+    """
 
     candidate_id: str
     baec_id: str
     monitoring_plan_id: str
+    plan_version: int
     signal_candidates: tuple[SignalCandidate, ...]
 
     def __post_init__(self) -> None:
         _text(self.candidate_id, "CorrespondenceCandidate.candidate_id")
         _text(self.baec_id, "CorrespondenceCandidate.baec_id")
         _text(self.monitoring_plan_id, "CorrespondenceCandidate.monitoring_plan_id")
+        _plan_version(self.plan_version, "CorrespondenceCandidate.plan_version")
         if not isinstance(self.signal_candidates, tuple) or not self.signal_candidates:
             raise Engine2ValidationError("CorrespondenceCandidate needs at least one SignalCandidate")
         for signal in self.signal_candidates:
             _instance(signal, SignalCandidate, "CorrespondenceCandidate.signal_candidates item")
-            if signal.monitoring_plan_id != self.monitoring_plan_id:
-                raise Engine2ValidationError("every SignalCandidate must belong to the candidate's plan")
+            if plan_key(signal) != plan_key(self):
+                raise Engine2ValidationError(
+                    f"{signal.signal_candidate_id} belongs to {signal.monitoring_plan_id} v{signal.plan_version}, "
+                    f"not {self.monitoring_plan_id} v{self.plan_version}; plan versions never mix")
+
+    @property
+    def observations(self) -> tuple[Observation, ...]:
+        return tuple(o for s in self.signal_candidates for o in s.observations)
 
     @property
     def observation_ids(self) -> frozenset[str]:
-        return frozenset(o for s in self.signal_candidates for o in s.observation_ids)
+        return frozenset(o.observation_id for o in self.observations)
 
 
 __all__ = [
@@ -577,5 +640,5 @@ __all__ = [
     "CorrespondenceCandidate", "CorrespondenceDimension", "CorrespondenceOutcome", "CrossCuttingCheckName",
     "DimensionFinding", "Engine1CurrentnessReading", "MonitoringPlan", "Observation", "RejectedSourceItem",
     "SignalCandidate", "SourceItem", "SufficiencyFinding", "Supersession", "SupersessionBasis", "ThresholdSpec",
-    "activate_monitoring_plan", "capture_observation", "content_integrity_sha256",
+    "activate_monitoring_plan", "capture_observation", "content_integrity_sha256", "plan_key", "reject_source_item",
 ]

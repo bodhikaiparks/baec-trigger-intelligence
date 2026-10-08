@@ -43,6 +43,7 @@ from .domain import (
     RejectedSourceItem,
     SufficiencyFinding,
     Supersession,
+    plan_key,
 )
 from .errors import Engine2ValidationError, ReviewInconsistentError
 from .measurement import DerivedMeasurement
@@ -100,8 +101,10 @@ class EvidenceLedger:
         if len(set(ids)) != len(ids):
             raise Engine2ValidationError("duplicate observation_id in ledger")
         for o in self.observations:
-            if o.monitoring_plan_id != plan.monitoring_plan_id:
-                raise Engine2ValidationError(f"{o.observation_id} was captured under a different plan")
+            if plan_key(o) != plan_key(plan):
+                raise Engine2ValidationError(
+                    f"{o.observation_id} belongs to {o.monitoring_plan_id} v{o.plan_version}, not "
+                    f"{plan.monitoring_plan_id} v{plan.plan_version}; plan versions never mix")
             if o.source_id not in plan.authorized_source_ids:
                 raise Engine2ValidationError(f"{o.observation_id} is from a source not authorized for this plan")
         known = set(ids)
@@ -111,6 +114,8 @@ class EvidenceLedger:
         for s in self.supersessions:
             if s.superseded_observation_id not in known or s.superseding_observation_id not in known:
                 raise Engine2ValidationError("a Supersession references an Observation not in the ledger")
+            # Both sides are ledger Observations, which share the ledger's exact plan version,
+            # so a Supersession can never cross versions: a plan revision is not a supersession.
         nxt = {s.superseded_observation_id: s.superseding_observation_id for s in self.supersessions}
         for start in nxt:
             seen, node = set(), start
@@ -122,12 +127,20 @@ class EvidenceLedger:
         mids = [m.measurement_id for m in self.measurements]
         if len(set(mids)) != len(mids) or known & set(mids):
             raise Engine2ValidationError("measurement ids must be unique and distinct from observation ids")
+        by_id = {o.observation_id: o for o in self.observations}
         for m in self.measurements:
-            if not m.source_observation_ids <= known:
+            if plan_key(m) != plan_key(plan):
+                raise Engine2ValidationError(f"{m.measurement_id} belongs to another plan version; plan versions never mix")
+            if any(by_id.get(i.observation_id) != i.observation for i in m.inputs):
                 raise Engine2ValidationError(f"{m.measurement_id} uses an Observation not in the ledger")
         rids = [r.item_id for r in self.rejected_items]
         if len(set(rids)) != len(rids):
             raise Engine2ValidationError("duplicate rejected item id")
+        for r in self.rejected_items:
+            if plan_key(r) != plan_key(plan):
+                raise Engine2ValidationError(
+                    f"refusal {r.item_id} belongs to {r.monitoring_plan_id} v{r.plan_version}, not "
+                    f"{plan.monitoring_plan_id} v{plan.plan_version}; plan versions never mix")
 
     @property
     def plan(self):
@@ -230,9 +243,10 @@ class HumanCorrespondenceReview:
         if not isinstance(self.candidate, CorrespondenceCandidate) or not isinstance(self.ledger, EvidenceLedger):
             raise ReviewInconsistentError("a review needs a CorrespondenceCandidate and an EvidenceLedger")
         plan = self.ledger.plan
-        if self.candidate.monitoring_plan_id != plan.monitoring_plan_id or self.candidate.baec_id != plan.baec_id:
-            raise ReviewInconsistentError("candidate does not belong to the ledger's plan and BAEC")
-        if not self.candidate.observation_ids <= self.ledger.observation_ids:
+        if plan_key(self.candidate) != plan_key(plan) or self.candidate.baec_id != plan.baec_id:
+            raise ReviewInconsistentError("candidate does not belong to the ledger's exact plan version and BAEC")
+        ledger_obs = {o.observation_id: o for o in self.ledger.observations}
+        if any(ledger_obs.get(o.observation_id) != o for o in self.candidate.observations):
             raise ReviewInconsistentError("candidate references Observations outside the ledger")
         if not isinstance(self.sufficiency, SufficiencyFinding):
             raise ReviewInconsistentError("sufficiency must be YES, NO, or UNKNOWN")

@@ -50,6 +50,7 @@ from baec_app.engine2.domain import (
     ThresholdSpec,
     activate_monitoring_plan,
     capture_observation,
+    reject_source_item,
 )
 from baec_app.engine2.errors import MonitoringPlanActivationError, SourceNotAuthorizedError
 from baec_app.engine2.measurement import DerivedMeasurement, MeasurementInput, Transformation, compute_derived_measurement
@@ -135,8 +136,9 @@ def source_item(packet: dict) -> SourceItem:
     )
 
 
-def measurement_inputs(dm: dict) -> tuple[MeasurementInput, ...]:
-    return tuple(MeasurementInput(i["observation_id"], i["quantity"], Decimal(i["value"]), i["unit"]) for i in dm["inputs"])
+def measurement_inputs(dm: dict, observations: dict[str, Observation]) -> tuple[MeasurementInput, ...]:
+    return tuple(MeasurementInput(observations[i["observation_id"]], i["quantity"], Decimal(i["value"]), i["unit"])
+                 for i in dm["inputs"])
 
 
 def findings_from(case: dict, overrides: dict[str, DimensionFinding] | None = None) -> tuple[DimensionAssessment, ...]:
@@ -192,7 +194,7 @@ def run_case(corpus: dict, case: dict) -> CaseRun:
                 evidence_event_id=entry["evidence_event_id"] if entry else packet["packet_id"],
             )
         except SourceNotAuthorizedError as error:
-            run.rejected.append(RejectedSourceItem(packet["packet_id"], str(error)))
+            run.rejected.append(reject_source_item(run.active_plan, source_item(packet), str(error)))
             continue
         run.observations.append(observation)
     supersessions = tuple(
@@ -200,16 +202,19 @@ def run_case(corpus: dict, case: dict) -> CaseRun:
         for o in case["raw_observations_expected"] if o["superseded_by"]
     )
     run.measurements = [
-        compute_derived_measurement(dm["measurement_id"], Transformation(dm["transformation_id"]), measurement_inputs(dm), ts(dm["calculated_at"]))
+        compute_derived_measurement(dm["measurement_id"], Transformation(dm["transformation_id"]),
+                                    measurement_inputs(dm, {o.observation_id: o for o in run.observations}),
+                                    ts(dm["calculated_at"]))
         for dm in case["derived_measurements_expected"]
     ]
     run.ledger = EvidenceLedger(run.active_plan, tuple(run.observations), supersessions, tuple(run.measurements), tuple(run.rejected))
     if not run.observations:
         return run  # nothing admitted: no Signal Candidate, no review, no outcome
     plan = run.active_plan.plan
-    signal = SignalCandidate(f"SC-{case['case_id']}", plan.monitoring_plan_id,
-                             tuple(o.observation_id for o in run.observations), REVIEWER)
-    run.candidate = CorrespondenceCandidate(f"CC-{case['case_id']}", plan.baec_id, plan.monitoring_plan_id, (signal,))
+    signal = SignalCandidate(f"SC-{case['case_id']}", plan.monitoring_plan_id, plan.plan_version,
+                             tuple(run.observations), REVIEWER)
+    run.candidate = CorrespondenceCandidate(f"CC-{case['case_id']}", plan.baec_id, plan.monitoring_plan_id,
+                                            plan.plan_version, (signal,))
     run.review_kwargs = dict(
         review_id=f"REV-{case['case_id']}", candidate=run.candidate, ledger=run.ledger,
         findings=findings_from(case), checks=checks_from(case),

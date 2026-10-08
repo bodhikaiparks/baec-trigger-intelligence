@@ -212,11 +212,15 @@ def test_duplicate_copies_of_one_event_are_one_underlying_event():
 # --- Derived Measurements (Stage A Section 7.3) -------------------------------
 
 
-def _pct(base: str, new: str):
+def _obs(oid: str, content: str | None = None):
+    return b.observe(b.active(), oid, b.item(f"PKT-{oid}", content=content or f"Synthetic notice {oid}."))
+
+
+def _pct(base: str, new: str, base_obs=None, new_obs=None):
     return compute_derived_measurement(
         "DM-T", Transformation.PERCENT_CHANGE_FROM_TWO_PRICES,
-        (MeasurementInput("OBS-A", "baseline_price", Decimal(base), "USD per pack"),
-         MeasurementInput("OBS-B", "new_price", Decimal(new), "USD per pack")), b.T0)
+        (MeasurementInput(base_obs or _obs("OBS-A"), "baseline_price", Decimal(base), "USD per pack"),
+         MeasurementInput(new_obs or _obs("OBS-B"), "new_price", Decimal(new), "USD per pack")), b.T0)
 
 
 @pytest.mark.parametrize("base,new,expected", [("100.00", "110.00", "10"), ("100.00", "110.01", "10.01"),
@@ -239,7 +243,7 @@ def test_non_terminating_result_is_refused_not_rounded():
 @pytest.mark.parametrize("bps,expected", [("1000", "10"), ("1001", "10.01"), ("1100", "11")])
 def test_basis_points_conversion(bps, expected):
     m = compute_derived_measurement("DM-T", Transformation.BASIS_POINTS_TO_PERCENT,
-                                    (MeasurementInput("OBS-A", "basis_points", Decimal(bps), "basis points"),), b.T0)
+                                    (MeasurementInput(_obs("OBS-A"), "basis_points", Decimal(bps), "basis points"),), b.T0)
     assert m.output_value == Decimal(expected)
 
 
@@ -251,7 +255,7 @@ def test_measurement_cannot_carry_a_wrong_output_or_unknown_transformation():
         Transformation("corpus.arbitrary_expression")
     with pytest.raises(DerivedMeasurementError):
         compute_derived_measurement("DM-T", Transformation.PERCENT_CHANGE_FROM_TWO_PRICES,
-                                    (MeasurementInput("OBS-A", "baseline_price", Decimal("100"), "USD per pack"),), b.T0)
+                                    (MeasurementInput(_obs("OBS-A"), "baseline_price", Decimal("100"), "USD per pack"),), b.T0)
 
 
 def test_measurement_with_corrected_input_is_no_longer_usable():
@@ -259,7 +263,7 @@ def test_measurement_with_corrected_input_is_no_longer_usable():
     base = b.observe(a, "OBS-A", b.item("PKT-A", content="Baseline USD 100.00 per pack."))
     corrected = b.observe(a, "OBS-C", b.item("PKT-C", content="CORRECTION: baseline USD 102.40 per pack."))
     new = b.observe(a, "OBS-B", b.item("PKT-B", content="New price USD 112.00 per pack."))
-    old_dm = _pct("100.00", "112.00")
+    old_dm = _pct("100.00", "112.00", base, new)
     led = b.ledger(a, [base, corrected, new], measurements=(old_dm,),
                    supersessions=(Supersession("OBS-A", "OBS-C", SupersessionBasis.EXPLICIT_CORRECTION_OR_RETRACTION),))
     assert "DM-T" in led.measurement_ids and "DM-T" not in led.usable_measurement_ids

@@ -45,7 +45,7 @@ def _base(conn, plan=None):
                                     recorded_at=T, recorded_by=ACTOR)
 
 
-def _store_review(conn, review: HumanCorrespondenceReview, activation=ACT, version=1):
+def _store_review(conn, review: HumanCorrespondenceReview, activation=ACT):
     for o in review.ledger.observations:
         if not p._exists(conn, "observations", observation_id=o.observation_id):
             p.record_observation(conn, o, activation_id=activation, recorded_at=T, recorded_by=ACTOR)
@@ -54,13 +54,12 @@ def _store_review(conn, review: HumanCorrespondenceReview, activation=ACT, versi
             p.record_supersession(conn, s, recorded_at=T, recorded_by=ACTOR)
     for m in review.ledger.measurements:
         if not p._exists(conn, "derived_measurements", measurement_id=m.measurement_id):
-            p.record_derived_measurement(conn, m, monitoring_plan_id=b.PLAN_ID, plan_version=version,
-                                         recorded_at=T, recorded_by=ACTOR)
+            p.record_derived_measurement(conn, m, recorded_at=T, recorded_by=ACTOR)
     for s in review.candidate.signal_candidates:
         if not p._exists(conn, "signal_candidates", signal_candidate_id=s.signal_candidate_id):
-            p.record_signal_candidate(conn, s, plan_version=version, recorded_at=T, recorded_by=ACTOR)
+            p.record_signal_candidate(conn, s, recorded_at=T, recorded_by=ACTOR)
     if not p._exists(conn, "correspondence_candidates", candidate_id=review.candidate.candidate_id):
-        p.record_correspondence_candidate(conn, review.candidate, plan_version=version, recorded_at=T, recorded_by=ACTOR)
+        p.record_correspondence_candidate(conn, review.candidate, recorded_at=T, recorded_by=ACTOR)
     return p.record_review(conn, review, activation_id=activation, recorded_at=T, recorded_by=ACTOR)
 
 
@@ -171,9 +170,9 @@ def test_observation_from_a_source_the_plan_does_not_authorize_is_refused(conn):
 
 def test_source_refusal_is_audit_only(conn):
     _base(conn)
-    p.record_source_refusal(conn, RejectedSourceItem("PKT-X", "no Authorized Source"), activation_id=ACT,
-                            source_reference=None, recorded_at=T, recorded_by=ACTOR)
-    assert p.load_source_refusal(conn, b.PLAN_ID, 1, "PKT-X") == RejectedSourceItem("PKT-X", "no Authorized Source")
+    refusal = RejectedSourceItem("PKT-X", b.PLAN_ID, 1, "no Authorized Source")
+    p.record_source_refusal(conn, refusal, activation_id=ACT, source_reference=None, recorded_at=T, recorded_by=ACTOR)
+    assert p.load_source_refusal(conn, b.PLAN_ID, 1, "PKT-X") == refusal
     assert conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 0
     assert p.audit_events(conn)[-1].event_type == "SOURCE_ITEM_REFUSED"
 
@@ -213,11 +212,11 @@ def _full(conn):
     new = b.observe(active, "OBS-B", b.item("PKT-B", content="New price USD 112.00 per pack."))
     fix = b.observe(active, "OBS-C", b.item("PKT-C", content="CORRECTION: baseline USD 102.40 per pack."))
     dm = compute_derived_measurement("DM-1", Transformation.PERCENT_CHANGE_FROM_TWO_PRICES, (
-        MeasurementInput("OBS-A", "baseline_price", Decimal("100.00"), "USD per pack"),
-        MeasurementInput("OBS-B", "new_price", Decimal("112.00"), "USD per pack")), b.T0)
+        MeasurementInput(base, "baseline_price", Decimal("100.00"), "USD per pack"),
+        MeasurementInput(new, "new_price", Decimal("112.00"), "USD per pack")), b.T0)
     for o in (base, new, fix):
         p.record_observation(conn, o, activation_id=ACT, recorded_at=T, recorded_by=ACTOR)
-    p.record_derived_measurement(conn, dm, monitoring_plan_id=b.PLAN_ID, plan_version=1, recorded_at=T, recorded_by=ACTOR)
+    p.record_derived_measurement(conn, dm, recorded_at=T, recorded_by=ACTOR)
     p.record_supersession(conn, Supersession("OBS-A", "OBS-C", SupersessionBasis.EXPLICIT_CORRECTION_OR_RETRACTION),
                           recorded_at=T, recorded_by=ACTOR)
     review = b.review(b.ledger(active, [base, new, fix], measurements=(dm,), supersessions=(
@@ -295,16 +294,17 @@ def test_supersession_and_measurement_require_stored_internal_references(conn):
     with pytest.raises(p.RecordNotFoundError):
         p.record_supersession(conn, Supersession("OBS-X", "OBS-Y", SupersessionBasis.EXPLICIT_CORRECTION_OR_RETRACTION),
                               recorded_at=T, recorded_by=ACTOR)
+    ghost = b.observe(active, "OBS-MISSING", b.item("PKT-M"))  # valid in memory, never stored
     dm = compute_derived_measurement("DM-X", Transformation.BASIS_POINTS_TO_PERCENT,
-                                     (MeasurementInput("OBS-MISSING", "basis_points", Decimal("1100"), "basis points"),), b.T0)
+                                     (MeasurementInput(ghost, "basis_points", Decimal("1100"), "basis points"),), b.T0)
     with pytest.raises(p.RecordNotFoundError):
-        p.record_derived_measurement(conn, dm, monitoring_plan_id=b.PLAN_ID, plan_version=1, recorded_at=T, recorded_by=ACTOR)
-    sc = SignalCandidate("SC-X", b.PLAN_ID, ("OBS-MISSING",), ACTOR)
+        p.record_derived_measurement(conn, dm, recorded_at=T, recorded_by=ACTOR)
+    sc = SignalCandidate("SC-X", b.PLAN_ID, 1, (ghost,), ACTOR)
     with pytest.raises(p.RecordNotFoundError):
-        p.record_signal_candidate(conn, sc, plan_version=1, recorded_at=T, recorded_by=ACTOR)
-    cc = CorrespondenceCandidate("CC-X", b.BAEC_ID, b.PLAN_ID, (SignalCandidate("SC-NOT-STORED", b.PLAN_ID, ("O",), ACTOR),))
+        p.record_signal_candidate(conn, sc, recorded_at=T, recorded_by=ACTOR)
+    cc = CorrespondenceCandidate("CC-X", b.BAEC_ID, b.PLAN_ID, 1, (SignalCandidate("SC-NOT-STORED", b.PLAN_ID, 1, (ghost,), ACTOR),))
     with pytest.raises(p.RecordNotFoundError):
-        p.record_correspondence_candidate(conn, cc, plan_version=1, recorded_at=T, recorded_by=ACTOR)
+        p.record_correspondence_candidate(conn, cc, recorded_at=T, recorded_by=ACTOR)
     assert active is not None and conn.execute("SELECT COUNT(*) FROM signal_candidates").fetchone()[0] == 0
 
 
@@ -522,7 +522,15 @@ def test_e_source_authorization_is_version_specific(conn):
     p.record_plan_activation(conn, b.PLAN_ID, 1, b.current(), activation_id=V1, recorded_at=T, recorded_by=ACTOR)
     p.record_plan_activation(conn, b.PLAN_ID, 2, b.current(), activation_id=V2, recorded_at=T, recorded_by=ACTOR)
     from_src = b.observe(b.active(b.plan()), "OBS-SRC1")
-    with pytest.raises(p.Engine2WriteRefused, match="not authorized"):  # SRC is authorized for v1 only
+    from baec_app.engine2.errors import SourceNotAuthorizedError
+    v2_active = p.load_active_plan(conn, V2)
+    with pytest.raises(SourceNotAuthorizedError):  # in memory: SRC is authorized for v1 only
+        b.observe(v2_active, "OBS-SRC2")
+    from dataclasses import replace
+    forged = replace(from_src, observation_id="OBS-FORGED", plan_version=2)  # bypasses capture
+    with pytest.raises(p.Engine2WriteRefused, match="not authorized"):
+        p.record_observation(conn, forged, activation_id=V2, recorded_at=T, recorded_by=ACTOR)
+    with pytest.raises(p.Engine2WriteRefused, match="v1, but activation"):
         p.record_observation(conn, from_src, activation_id=V2, recorded_at=T, recorded_by=ACTOR)
     p.record_observation(conn, from_src, activation_id=V1, recorded_at=T, recorded_by=ACTOR)
     with pytest.raises(sqlite3.IntegrityError):  # the composite foreign key is the backstop
@@ -538,18 +546,17 @@ def test_f_and_j_version_1_evidence_cannot_join_version_2_records(conn):
     p.record_plan_activation(conn, b.PLAN_ID, 2, b.current(), activation_id=V2, recorded_at=T, recorded_by=ACTOR)
     obs = b.observe(b.active(b.plan()))
     p.record_observation(conn, obs, activation_id=V1, recorded_at=T, recorded_by=ACTOR)
-    signal = SignalCandidate("SC-V2", b.PLAN_ID, (obs.observation_id,), ACTOR)
-    with pytest.raises(p.Engine2WriteRefused, match="never mix"):
-        p.record_signal_candidate(conn, signal, plan_version=2, recorded_at=T, recorded_by=ACTOR)
-    dm = compute_derived_measurement("DM-V2", Transformation.BASIS_POINTS_TO_PERCENT,
-                                     (MeasurementInput(obs.observation_id, "basis_points", Decimal("1100"), "basis points"),), b.T0)
-    with pytest.raises(p.Engine2WriteRefused, match="never mix"):
-        p.record_derived_measurement(conn, dm, monitoring_plan_id=b.PLAN_ID, plan_version=2, recorded_at=T, recorded_by=ACTOR)
-    p.record_signal_candidate(conn, SignalCandidate("SC-V1", b.PLAN_ID, (obs.observation_id,), ACTOR),
-                              plan_version=1, recorded_at=T, recorded_by=ACTOR)
-    candidate = CorrespondenceCandidate("CC-V2", b.BAEC_ID, b.PLAN_ID, (p.load_signal_candidate(conn, "SC-V1"),))
-    with pytest.raises(p.Engine2WriteRefused, match="never mix"):
-        p.record_correspondence_candidate(conn, candidate, plan_version=2, recorded_at=T, recorded_by=ACTOR)
+    from baec_app.engine2.errors import Engine2ValidationError
+    with pytest.raises(Engine2ValidationError, match="never mix"):  # refused in memory, before persistence
+        SignalCandidate("SC-V2", b.PLAN_ID, 2, (obs,), ACTOR)
+    p.record_signal_candidate(conn, SignalCandidate("SC-V1", b.PLAN_ID, 1, (obs,), ACTOR), recorded_at=T, recorded_by=ACTOR)
+    with pytest.raises(Engine2ValidationError, match="never mix"):
+        CorrespondenceCandidate("CC-V2", b.BAEC_ID, b.PLAN_ID, 2, (p.load_signal_candidate(conn, "SC-V1"),))
+    dm = compute_derived_measurement("DM-V1", Transformation.BASIS_POINTS_TO_PERCENT,
+                                     (MeasurementInput(obs, "basis_points", Decimal("1100"), "basis points"),), b.T0)
+    assert dm.plan_version == 1  # derived from its input; it cannot be filed under version 2
+    p.record_derived_measurement(conn, dm, recorded_at=T, recorded_by=ACTOR)
+    assert conn.execute("SELECT plan_version FROM derived_measurements WHERE measurement_id = 'DM-V1'").fetchone()[0] == 1
     with pytest.raises(sqlite3.IntegrityError):  # direct SQL mixing is refused by composite keys
         conn.execute("INSERT INTO signal_candidates VALUES ('SC-RAW', 'MP-TEST-001', 2, 'x', 't', 'a')")
         conn.execute("INSERT INTO signal_candidate_observations VALUES ('SC-RAW', 'MP-TEST-001', 2, 0, ?)", (obs.observation_id,))
@@ -559,7 +566,7 @@ def test_g_h_version_1_review_is_unchanged_by_version_2(conn):
     _two_versions(conn)
     active_v1 = p.record_plan_activation(conn, b.PLAN_ID, 1, b.current(), activation_id=V1, recorded_at=T, recorded_by=ACTOR)
     review_v1 = b.review(b.ledger(active_v1), review_id="REV-V1")
-    assert _store_review(conn, review_v1, activation=V1, version=1) is O.HUMAN_VERIFIED_CORRESPONDENCE
+    assert _store_review(conn, review_v1, activation=V1) is O.HUMAN_VERIFIED_CORRESPONDENCE
     rows_before = conn.execute("SELECT * FROM reviews WHERE review_id = 'REV-V1'").fetchall()
 
     active_v2 = p.record_plan_activation(conn, b.PLAN_ID, 2, b.current(), activation_id=V2, recorded_at=T, recorded_by=ACTOR)
@@ -572,11 +579,11 @@ def test_g_h_version_1_review_is_unchanged_by_version_2(conn):
                                content_sha256=__import__("hashlib").sha256(item2.content.encode()).hexdigest(),
                                source_locator="PKT-V2", evidence_event_id="EVT-V2")
     led2 = b.ledger(active_v2, [obs2])
-    signal2 = SignalCandidate("SC-V2", b.PLAN_ID, ("OBS-V2",), ACTOR)
+    signal2 = SignalCandidate("SC-V2", b.PLAN_ID, 2, (obs2,), ACTOR)
     review_v2 = b.review(led2, review_id="REV-V2",
-                         candidate=CorrespondenceCandidate("CC-V2", b.BAEC_ID, b.PLAN_ID, (signal2,)),
+                         candidate=CorrespondenceCandidate("CC-V2", b.BAEC_ID, b.PLAN_ID, 2, (signal2,)),
                          findings=b.findings(ev=("OBS-V2",), THRESHOLD_MATCH=(F.CONTRADICTED, ("OBS-V2",))))
-    assert _store_review(conn, review_v2, activation=V2, version=2) is O.NO_CORRESPONDENCE
+    assert _store_review(conn, review_v2, activation=V2) is O.NO_CORRESPONDENCE
 
     reloaded = p.load_review(conn, "REV-V1")
     assert reloaded == review_v1 and reloaded.ledger.plan.plan_version == 1
@@ -603,7 +610,7 @@ def test_i_duplicate_plan_version_is_refused(conn):
 def test_j_tampered_review_version_fails_closed(conn):
     _two_versions(conn)
     active_v1 = p.record_plan_activation(conn, b.PLAN_ID, 1, b.current(), activation_id=V1, recorded_at=T, recorded_by=ACTOR)
-    _store_review(conn, b.review(b.ledger(active_v1), review_id="REV-V1"), activation=V1, version=1)
+    _store_review(conn, b.review(b.ledger(active_v1), review_id="REV-V1"), activation=V1)
     _tamper(conn, "UPDATE reviews SET plan_version = 2 WHERE review_id = 'REV-V1'", fks=False)
     with pytest.raises(p.Engine2IntegrityError):
         p.load_review(conn, "REV-V1")

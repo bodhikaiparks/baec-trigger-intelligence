@@ -46,13 +46,12 @@ def persist_case(case):
     for s in run.ledger.supersessions:
         p.record_supersession(conn, s, recorded_at=T, recorded_by=ACTOR)
     for m in run.measurements:
-        p.record_derived_measurement(conn, m, monitoring_plan_id=plan.monitoring_plan_id, plan_version=plan.plan_version,
-                                     recorded_at=T, recorded_by=ACTOR)
+        p.record_derived_measurement(conn, m, recorded_at=T, recorded_by=ACTOR)
     if run.review is None:
         return conn, None
     for s in run.candidate.signal_candidates:
-        p.record_signal_candidate(conn, s, plan_version=plan.plan_version, recorded_at=T, recorded_by=ACTOR)
-    p.record_correspondence_candidate(conn, run.candidate, plan_version=plan.plan_version, recorded_at=T, recorded_by=ACTOR)
+        p.record_signal_candidate(conn, s, recorded_at=T, recorded_by=ACTOR)
+    p.record_correspondence_candidate(conn, run.candidate, recorded_at=T, recorded_by=ACTOR)
     p.record_review(conn, run.review, activation_id=ACTIVATION, recorded_at=T, recorded_by=ACTOR)
     return conn, run.review.review_id
 

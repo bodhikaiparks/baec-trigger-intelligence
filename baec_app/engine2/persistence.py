@@ -63,6 +63,7 @@ from .domain import (
     SupersessionBasis,
     ThresholdSpec,
     activate_monitoring_plan,
+    plan_key,
 )
 from .errors import Engine2Error, MonitoringPlanActivationError
 from .measurement import DerivedMeasurement, MeasurementInput, Transformation
@@ -782,15 +783,18 @@ def record_observation(connection, observation: Observation, *, activation_id: s
         raise Engine2WriteRefused("record_observation requires an Observation")
     when, actor = _when(recorded_at), _actor(recorded_by)
     plan_id, ver = _activated_plan(connection, activation_id)
-    if observation.monitoring_plan_id != plan_id:
-        raise Engine2WriteRefused("the Observation was captured under a different Monitoring Plan")
+    if plan_key(observation) != (plan_id, ver):
+        raise Engine2WriteRefused(
+            f"the Observation belongs to {_plan_ref(*plan_key(observation))}, but activation {activation_id} "
+            f"is for {_plan_ref(plan_id, ver)}")
     if not _exists(connection, "plan_authorized_sources", monitoring_plan_id=plan_id, plan_version=ver,
                    source_id=observation.source_id):
         raise Engine2WriteRefused(f"source {observation.source_id} is not authorized for {_plan_ref(plan_id, ver)}")
     o = observation
     with _transaction(connection):
         _refuse_duplicate(connection, "observations", "Observation", observation_id=o.observation_id)
-        _insert(connection, "observations", observation_id=o.observation_id, monitoring_plan_id=plan_id, plan_version=ver,
+        _insert(connection, "observations", observation_id=o.observation_id, monitoring_plan_id=o.monitoring_plan_id,
+                plan_version=o.plan_version,
                 activation_id=activation_id, source_id=o.source_id, source_type=o.source_type,
                 observed_at=_ts(o.observed_at), published_at=_ts(o.published_at), effective_at=_ts(o.effective_at),
                 exact_evidence_content=o.exact_evidence_content, source_locator=o.source_locator,
@@ -809,11 +813,12 @@ def observation_plan_version(connection, observation_id: str) -> tuple[str, int]
 def load_observation(connection, observation_id: str) -> Observation:
     row = _one(connection, "SELECT monitoring_plan_id, source_id, source_type, observed_at, exact_evidence_content, "
                "source_locator, provenance, content_sha256, acquisition_method, authorization_reference, "
-               "evidence_event_id, published_at, effective_at FROM observations WHERE observation_id = ?",
+               "evidence_event_id, published_at, effective_at, plan_version FROM observations WHERE observation_id = ?",
                (observation_id,), f"Observation {observation_id}")
     with _reading(f"Observation {observation_id}"):
         return Observation(
-            observation_id=observation_id, monitoring_plan_id=row[0], source_id=row[1], source_type=row[2],
+            observation_id=observation_id, monitoring_plan_id=row[0], plan_version=row[13], source_id=row[1],
+            source_type=row[2],
             observed_at=_dt(row[3]), exact_evidence_content=row[4], source_locator=row[5],
             provenance=ProvenanceCategory(row[6]), content_sha256=row[7], acquisition_method=row[8],
             authorization_reference=row[9], evidence_event_id=row[10], published_at=_dt(row[11]),
@@ -825,11 +830,17 @@ def record_source_refusal(
     connection, refusal: RejectedSourceItem, *, activation_id: str, source_reference: str | None,
     recorded_at: datetime, recorded_by: str,
 ) -> None:
-    """Audit an item refused during capture under an ACTIVATED plan version. Not an Observation, not an outcome."""
+    """Audit an item refused during capture. The refusal's own plan identity is authoritative and must
+    equal the ACTIVATED activation's exact plan version. Not an Observation, not an outcome."""
     if not isinstance(refusal, RejectedSourceItem):
         raise Engine2WriteRefused("record_source_refusal requires a RejectedSourceItem")
     when, actor = _when(recorded_at), _actor(recorded_by)
     plan_id, ver = _activated_plan(connection, activation_id)
+    if plan_key(refusal) != (plan_id, ver):
+        raise Engine2WriteRefused(
+            f"the refusal belongs to {_plan_ref(*plan_key(refusal))}, but activation {activation_id} "
+            f"is for {_plan_ref(plan_id, ver)}")
+    plan_id, ver = plan_key(refusal)
     with _transaction(connection):
         _refuse_duplicate(connection, "source_refusals", "Source refusal", monitoring_plan_id=plan_id, plan_version=ver,
                           item_id=refusal.item_id)
@@ -844,7 +855,7 @@ def load_source_refusal(connection, monitoring_plan_id: str, plan_version: int, 
     row = _one(connection, "SELECT reason FROM source_refusals WHERE monitoring_plan_id = ? AND plan_version = ? "
                "AND item_id = ?", (monitoring_plan_id, plan_version, item_id), f"Source refusal {item_id}")
     with _reading(f"Source refusal {item_id}"):
-        return RejectedSourceItem(item_id, row[0])
+        return RejectedSourceItem(item_id, monitoring_plan_id, plan_version, row[0])
 
 
 def record_supersession(connection, supersession: Supersession, *, recorded_at: datetime, recorded_by: str) -> None:
@@ -854,8 +865,8 @@ def record_supersession(connection, supersession: Supersession, *, recorded_at: 
     when, actor = _when(recorded_at), _actor(recorded_by)
     old = load_observation(connection, supersession.superseded_observation_id)
     new = load_observation(connection, supersession.superseding_observation_id)
-    key = observation_plan_version(connection, old.observation_id)
-    if observation_plan_version(connection, new.observation_id) != key:
+    key = plan_key(old)
+    if plan_key(new) != key:
         raise Engine2WriteRefused("a Supersession must relate Observations of the same plan version")
     with _transaction(connection):
         _refuse_duplicate(connection, "supersessions", "Supersession",
@@ -880,14 +891,17 @@ def load_supersession(connection, superseded_observation_id: str) -> Supersessio
 # --- Derived Measurements -----------------------------------------------------------
 
 
-def record_derived_measurement(connection, measurement: DerivedMeasurement, *, monitoring_plan_id: str, plan_version: int,
-                               recorded_at: datetime, recorded_by: str) -> None:
-    """Record a Derived Measurement whose inputs are stored Observations of this exact plan version."""
+def record_derived_measurement(connection, measurement: DerivedMeasurement, *, recorded_at: datetime,
+                               recorded_by: str) -> None:
+    """Record a Derived Measurement. Its plan version is its inputs' version; every input must be stored unchanged."""
     if not isinstance(measurement, DerivedMeasurement):
         raise Engine2WriteRefused("record_derived_measurement requires a DerivedMeasurement")
     when, actor = _when(recorded_at), _actor(recorded_by)
-    m, key = measurement, (monitoring_plan_id, plan_version)
+    m, key = measurement, plan_key(measurement)
     load_monitoring_plan(connection, *key)
+    for i in m.inputs:
+        if load_observation(connection, i.observation_id) != i.observation:
+            raise Engine2WriteRefused(f"input Observation {i.observation_id} differs from the stored record")
     _require_same_version(connection, key, "observations", "observation_id", sorted(m.source_observation_ids), "Observation")
     if _exists(connection, "observations", observation_id=m.measurement_id):
         raise Engine2WriteRefused("a measurement id may not equal an observation id")
@@ -916,7 +930,7 @@ def load_derived_measurement(connection, measurement_id: str) -> DerivedMeasurem
     with _reading(f"Derived Measurement {measurement_id}"):
         m = DerivedMeasurement(
             measurement_id=measurement_id, transformation=Transformation(row[0]),
-            inputs=tuple(MeasurementInput(o, q, Decimal(v), u) for o, q, v, u in inputs),
+            inputs=tuple(MeasurementInput(load_observation(connection, o), q, Decimal(v), u) for o, q, v, u in inputs),
             output_value=Decimal(row[4]), calculated_at=_dt(row[6]), rounding_rule=row[3], output_unit=row[5],
         )
         if (row[1], row[2]) != (m.transformation_version, m.formula):
@@ -927,14 +941,16 @@ def load_derived_measurement(connection, measurement_id: str) -> DerivedMeasurem
 # --- Signal and Correspondence Candidates ---------------------------------------------
 
 
-def record_signal_candidate(connection, signal: SignalCandidate, *, plan_version: int, recorded_at: datetime,
-                            recorded_by: str) -> None:
-    """Record a Signal Candidate over Observations of one exact plan version. It asserts no finding."""
+def record_signal_candidate(connection, signal: SignalCandidate, *, recorded_at: datetime, recorded_by: str) -> None:
+    """Record a Signal Candidate under its own exact plan version. It asserts no finding."""
     if not isinstance(signal, SignalCandidate):
         raise Engine2WriteRefused("record_signal_candidate requires a SignalCandidate")
     when, actor = _when(recorded_at), _actor(recorded_by)
-    s, key = signal, (signal.monitoring_plan_id, plan_version)
+    s, key = signal, plan_key(signal)
     load_monitoring_plan(connection, *key)
+    for o in s.observations:
+        if load_observation(connection, o.observation_id) != o:
+            raise Engine2WriteRefused(f"Observation {o.observation_id} differs from the stored record")
     _require_same_version(connection, key, "observations", "observation_id", s.observation_ids, "Observation")
     with _transaction(connection):
         _refuse_duplicate(connection, "signal_candidates", "Signal Candidate", signal_candidate_id=s.signal_candidate_id)
@@ -950,24 +966,24 @@ def record_signal_candidate(connection, signal: SignalCandidate, *, plan_version
 
 
 def load_signal_candidate(connection, signal_candidate_id: str) -> SignalCandidate:
-    row = _one(connection, "SELECT monitoring_plan_id, selected_by FROM signal_candidates WHERE signal_candidate_id = ?",
-               (signal_candidate_id,), f"Signal Candidate {signal_candidate_id}")
+    row = _one(connection, "SELECT monitoring_plan_id, selected_by, plan_version FROM signal_candidates "
+               "WHERE signal_candidate_id = ?", (signal_candidate_id,), f"Signal Candidate {signal_candidate_id}")
     obs = [r[0] for r in connection.execute("SELECT observation_id FROM signal_candidate_observations "
                                             "WHERE signal_candidate_id = ? ORDER BY position", (signal_candidate_id,))]
     dims = [r[0] for r in connection.execute("SELECT dimension FROM signal_candidate_dimensions "
                                              "WHERE signal_candidate_id = ?", (signal_candidate_id,))]
     with _reading(f"Signal Candidate {signal_candidate_id}"):
-        return SignalCandidate(signal_candidate_id, row[0], tuple(obs), row[1],
-                               frozenset(CorrespondenceDimension(d) for d in dims))
+        return SignalCandidate(signal_candidate_id, row[0], row[2], tuple(load_observation(connection, o) for o in obs),
+                               row[1], frozenset(CorrespondenceDimension(d) for d in dims))
 
 
-def record_correspondence_candidate(connection, candidate: CorrespondenceCandidate, *, plan_version: int,
-                                    recorded_at: datetime, recorded_by: str) -> None:
-    """Record a candidate whose Signal Candidates are stored unchanged under the same plan version. No outcome here."""
+def record_correspondence_candidate(connection, candidate: CorrespondenceCandidate, *, recorded_at: datetime,
+                                    recorded_by: str) -> None:
+    """Record a candidate under its own exact plan version; its Signal Candidates must be stored unchanged. No outcome here."""
     if not isinstance(candidate, CorrespondenceCandidate):
         raise Engine2WriteRefused("record_correspondence_candidate requires a CorrespondenceCandidate")
     when, actor = _when(recorded_at), _actor(recorded_by)
-    c, key = candidate, (candidate.monitoring_plan_id, plan_version)
+    c, key = candidate, plan_key(candidate)
     if load_monitoring_plan(connection, *key).baec_id != c.baec_id:
         raise Engine2WriteRefused("the candidate's BAEC is not the plan's BAEC")
     for s in c.signal_candidates:
@@ -988,13 +1004,13 @@ def record_correspondence_candidate(connection, candidate: CorrespondenceCandida
 
 
 def load_correspondence_candidate(connection, candidate_id: str) -> CorrespondenceCandidate:
-    row = _one(connection, "SELECT baec_id, monitoring_plan_id FROM correspondence_candidates WHERE candidate_id = ?",
-               (candidate_id,), f"Correspondence Candidate {candidate_id}")
+    row = _one(connection, "SELECT baec_id, monitoring_plan_id, plan_version FROM correspondence_candidates "
+               "WHERE candidate_id = ?", (candidate_id,), f"Correspondence Candidate {candidate_id}")
     ids = [r[0] for r in connection.execute("SELECT signal_candidate_id FROM candidate_signals WHERE candidate_id = ? "
                                             "ORDER BY position", (candidate_id,))]
     signals = tuple(load_signal_candidate(connection, i) for i in ids)
     with _reading(f"Correspondence Candidate {candidate_id}"):
-        return CorrespondenceCandidate(candidate_id, row[0], row[1], signals)
+        return CorrespondenceCandidate(candidate_id, row[0], row[1], row[2], signals)
 
 
 # --- Human Correspondence Reviews --------------------------------------------------------
