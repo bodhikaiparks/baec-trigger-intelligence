@@ -1,0 +1,128 @@
+{
+  "project": "BAEC Trigger Intelligence",
+  "engine": "BAEC Engine 3: Re-engagement Preparation",
+  "stage": "F",
+  "component": "experimental harness",
+  "status": "LOCKED_OFFLINE_HARNESS_NOT_EXECUTED",
+  "lock_date": "2026-10-14",
+  "date": "2026-10-14",
+  "base_commit": "c81d00343d96683514dd38f43d11a6ebae6d104e",
+  "rule_label": "IMPLEMENTATION",
+  "stage_f_design_status": "LOCKED_DESIGN_NO_LIVE_EXECUTION",
+  "stage_f_design_manifest_sha256": "d098b6268e8e736a3333ac483f6eda94671fe1ce943ac1cd6a45c21c6511eda4",
+  "live_model_executed": false,
+  "live_model_authorized": false,
+  "api_key_used": false,
+  "external_model_sdk_used": false,
+  "network_calls": 0,
+  "pilot_executed": false,
+  "main_experiment_executed": false,
+  "experiment_results_exist": false,
+  "outreach_authorized": false,
+  "stage_a_to_f_locked_files_modified": false,
+  "engine1_modified": false,
+  "engine2_modified": false,
+  "governing_limitation": {
+    "id": "E3-E-SEM-001",
+    "name": "MODEL_SEMANTIC_ANNOTATION_NOT_AUTHORITATIVE",
+    "resolved": false
+  },
+  "harness_location": "experiments/engine3_stage_f (outside the importable baec_app production package)",
+  "experiment_provenance_values": {
+    "PILOT": "LIVE_SYNTHETIC_EXPERIMENT",
+    "FULL_RUN": "LIVE_SYNTHETIC_EXPERIMENT",
+    "DRY_RUN": "OFFLINE_HANDWRITTEN_DRY_RUN"
+  },
+  "output_schema_version": "engine3.stage_f.experimental_proposal_output.v1",
+  "planned_size": {
+    "arm_g_proposals": 220,
+    "pilot_proposals": 44,
+    "arm_a_annotation_runs": 240
+  },
+  "model_controlled_fields": [
+    "claim_type",
+    "semantic_class",
+    "grounding_refs",
+    "reference_use_mode",
+    "source_identity_refs",
+    "claim_field",
+    "declared_value",
+    "specificity",
+    "question_has_premise",
+    "source_instruction_ref",
+    "prescribes_buyer_choice"
+  ],
+  "dry_run": {
+    "case_count": 12,
+    "arm_g_cases": 11,
+    "arm_a_cases": 1,
+    "packet_count": 12,
+    "inputs": "tests/engine3/fixtures/ENGINE3_STAGE_F_DRY_RUN_INPUTS.json",
+    "oracle": "tests/engine3/fixtures/ENGINE3_STAGE_F_DRY_RUN_ORACLE.json",
+    "is_model_output": false
+  },
+  "pre_run_required": [
+    {
+      "id": "O-3",
+      "status": "PRE_RUN_REQUIRED",
+      "resolve_before": "any pilot"
+    },
+    {
+      "id": "O-5",
+      "status": "PRE_RUN_REQUIRED",
+      "resolve_before": "any pilot (frozen)"
+    },
+    {
+      "id": "O-6",
+      "status": "PRE_RUN_REQUIRED",
+      "resolve_before": "any live evaluation"
+    }
+  ],
+  "pre_run_records_supplied": false,
+  "decision_rule_reporting_statuses": [
+    "FIRED",
+    "NOT_FIRED",
+    "INSUFFICIENT_INSTANCES",
+    "NOT_EVALUABLE"
+  ],
+  "decision_rule_reporting_statuses_are_engine3_states": false,
+  "zero_denominator_rules_d_e": "NOT_EVALUABLE with numerator 0, denominator 0, rate null; never reported as 0%",
+  "owner_approved_implementation_choices": [
+    "disagreement only on formatting_variant or mixed_reference_modes goes to adjudication",
+    "rule C may fire from any confirmed false pass in that arm even with fewer than 30 instances",
+    "OFFLINE_HANDWRITTEN_DRY_RUN is experiment-only provenance, distinct from LIVE_SYNTHETIC_EXPERIMENT and PRERECORDED_SYNTHETIC"
+  ],
+  "verifier": "scripts/verify_engine3_stage_f_harness.py",
+  "harness_files": {
+    "docs/engine3/ENGINE3_STAGE_F_HARNESS_IMPLEMENTATION_REPORT.md": "72b2f358dffc46302ef42fd274b9e4bf0589b68dcee1a8f02974dcc03778d006",
+    "experiments/engine3_stage_f/__init__.py": "0d105d9be0dabd2a57696d914da4c735e311892badb02daac2f71a04c7b97a7c",
+    "experiments/engine3_stage_f/annotation.py": "07f169b72d35872bf06bb1a06eb486974b5807bfbff66f61be62b1ef2a53e2fd",
+    "experiments/engine3_stage_f/comparison.py": "d46398d4aa960d043a105bea93b8fd68db8c5cd365c1939b651a30d0b925a0d9",
+    "experiments/engine3_stage_f/contexts.py": "9e9cd6ca412ced6a1424b43ac7ddbe16403fe6c47274c7e9b87508682ceb62fc",
+    "experiments/engine3_stage_f/decision_rules.py": "c27d3ac078a23d40b4e32936a92a65c323a46678c08da525b24aa5c869fece69",
+    "experiments/engine3_stage_f/envelope.py": "def9962c255b7a1358e3d15a0037811f85f59aa4ba075859d06b029186d648ca",
+    "experiments/engine3_stage_f/readiness.py": "1174cc45b940f4caf6b976df99568ba67f3a79f14d1729f487b6957beafdd1e0",
+    "scripts/verify_engine3_stage_f_harness.py": "02bf7852bc4dd46ed9a25c34ed40ffe390c2f4eb846caafd98fc8d630031202c",
+    "tests/engine3/fixtures/ENGINE3_STAGE_F_DRY_RUN_INPUTS.json": "111b9ad0d970ebbbc1bcd4b7053e22f0f86f714fea048eab6180af0e9d345da6",
+    "tests/engine3/fixtures/ENGINE3_STAGE_F_DRY_RUN_ORACLE.json": "93a4f9eef526b5f12457980955792652b335e97de30c3e2342ef5873da6433fb",
+    "tests/engine3/stage_f_adapter.py": "a030631228755de648671bc9d45b47df7d33479d07c111ec581bc169ea7623d7",
+    "tests/engine3/test_engine3_stage_f_annotation.py": "8966bef36c84113ac77b7be148c6ab76eba85ac9350c67c3819aa05a84ac79b3",
+    "tests/engine3/test_engine3_stage_f_decision_rules.py": "2c5ab6debead60f3131b4b1448bff1d438ea01dec093fbe70f33a2a91504f0c5",
+    "tests/engine3/test_engine3_stage_f_dry_run.py": "b0f3ee56c2a5bea43bb85ce894a5840efebf1f1bfbd1feb87bb2c2bdb9c3a76c",
+    "tests/engine3/test_engine3_stage_f_envelope.py": "f0c098fb7a66cb3496ea45e08bfce9bd23e1868ff1834c4d108f6f2971f2f502",
+    "tests/engine3/test_engine3_stage_f_harness_manifest.py": "d9788969a6a6a40e408f7f659d6d801a04253d6096997f138f584a488ad059af",
+    "tests/engine3/test_engine3_stage_f_readiness.py": "f78fcea5cb6e6de85dcbfdc06badbe6925e6b69d0409e367b41d881a6ff7410f",
+    "tests/engine3/test_engine3_stage_f_static_audit.py": "4f124001cbf55e27a25bc763d280afc104aa15955c7df8b8b0cf9dd6f6926914"
+  },
+  "claim_boundary": "The Stage F harness is locked offline and tested only with handwritten synthetic dry-run inputs. It has not been executed against any model. It does not resolve E3-E-SEM-001, validates no model, and authorizes no live run, pilot, or outreach. Not evidence of semantic validation, purchase prediction, sales lift, production security, or BAEC theory.",
+  "test_result": {
+    "stage_f_harness_tests_passed": 253,
+    "tests_engine3_passed": 487,
+    "full_repository": {
+      "passed": 7284,
+      "deselected": 2,
+      "failed": 0
+    },
+    "locked_engine1_engine2_public_tests_passed": 183
+  }
+}
