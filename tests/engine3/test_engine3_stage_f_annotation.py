@@ -1,5 +1,7 @@
 """Stage F blinded annotation packets and strict human reference records."""
 
+import dataclasses
+import hashlib
 import inspect
 import json
 from dataclasses import replace
@@ -13,16 +15,22 @@ from baec_app.engine3.proposal_contract import parse_artifact
 from experiments.engine3_stage_f import annotation
 from experiments.engine3_stage_f.annotation import (
     ANNOTATION_GUIDE,
+    LOCKED_PROTOCOL_SHA256,
+    OPERATIONAL_GUIDE_SHA256,
+    PROVENANCE_FIELDS,
     REFERENCE_FIELDS,
     AdjudicatedSegment,
     Adjudication,
     AnnotationStatus,
+    PrimaryAnnotation,
     ReferenceFields,
     SegmentAnnotation,
+    annotation_packet_sha256,
     annotator_order,
     build_annotation_packet,
     finalize_reference,
     primary_field_agreement,
+    record_provenance,
 )
 from experiments.engine3_stage_f.comparison import compare_artifact, reference_segments
 from tests.engine3 import stage_f_adapter as ad
@@ -312,7 +320,7 @@ def test_flag_disagreement_alone_requires_adjudication():
     lambda a, b, j, p: (a, b, replace(j, alias=a.alias)),
     lambda a, b, j, p: (replace(a, role=b.role), b, j),
     lambda a, b, j, p: (a, replace(b, packet_id="0" * 64), j),
-    lambda a, b, j, p: (a, b, replace(j, protocol_version_sha256="0" * 64)),
+    lambda a, b, j, p: (a, b, replace(j, annotation_packet_sha256="0" * 64)),
     lambda a, b, j, p: (a, replace(b, segments=b.segments[:1]), j),
     lambda a, b, j, p: (a, b, replace(j, segments=j.segments + (AdjudicatedSegment(b.segments[1], "r"),))),
     lambda a, b, j, p: (a, b, replace(j, attestation=a.attestation)),
@@ -342,15 +350,15 @@ def test_attestation_disagreement_needs_adjudication():
     b = replace(b, attestation=replace(b.attestation, factual_accuracy=False))
     reference = finalize_reference(packet, a, b, None)
     assert reference.attestation is None and reference.human_safe is None and reference.reference_complete
-    decided = Adjudication("ADJ", packet.packet_id, a.protocol_version_sha256, "2026-10-15T09:00:00Z", (),
-                           attestation=a.attestation)
+    decided = Adjudication("ADJ", packet.packet_id, **record_provenance(packet), recorded_at="2026-10-15T09:00:00Z",
+                           segments=(), attestation=a.attestation)
     assert finalize_reference(packet, a, b, decided).human_safe is True
 
 
 def test_records_require_rfc3339_utc_and_digest_bindings():
     case, _, _, packet = _item("F-DRY-01", "A-EMAIL")
     a, _ = ad.primaries(case, "A-EMAIL", packet)
-    for changes in ({"recorded_at": "2026-10-14 12:00"}, {"protocol_version_sha256": "x"}, {"alias": ""}):
+    for changes in ({"recorded_at": "2026-10-14 12:00"}, {"annotation_packet_sha256": "x"}, {"alias": ""}):
         with pytest.raises(Engine3ValidationError):
             replace(a, **changes)
 
@@ -370,3 +378,164 @@ def test_statuses_and_flags_are_experiment_metadata_outside_engine3_vocabularies
              if isinstance(e, type) and issubclass(e, engine3_enums.Enum) for m in e}
     assert not {s.value for s in AnnotationStatus} & vocab
     assert "formatting_variant" not in {f for f in annotation.ReferenceFields.__dataclass_fields__}
+
+
+# --- HARNESS_AMENDMENT_003: annotation record provenance hashes ------------------------------------
+
+REFERENCE_ITEMS = [p for p in PACKETS if p[2].artifact_id in p[0]["human_reference"]]
+
+
+def _records(item):
+    case, _, artifact, packet = item
+    a, b = ad.primaries(case, artifact.artifact_id, packet)
+    return a, b, ad.adjudication(case, artifact.artifact_id, packet)
+
+
+def _expected_provenance(packet):
+    return {"locked_protocol_sha256": ad.protocol_sha256(), "operational_guide_sha256": ad.guide_sha256(),
+            "annotation_packet_sha256": hashlib.sha256(packet.to_json().encode("utf-8")).hexdigest()}
+
+
+def test_provenance_constants_are_the_exact_frozen_artifact_hashes():
+    assert PROVENANCE_FIELDS == ("locked_protocol_sha256", "operational_guide_sha256", "annotation_packet_sha256")
+    assert LOCKED_PROTOCOL_SHA256 == ad.protocol_sha256() == (
+        "cba979c91cdcc96f419b0f3758cadd651f3427064a7f66ebebd23929c623b5a4")
+    assert OPERATIONAL_GUIDE_SHA256 == ad.guide_sha256() == (
+        "fb4f0510254649dadfc68c06bb76bd1dfab73e2d33bc0db325faf791e61b9011")
+    freeze = json.loads((ad.REPO / "docs" / "engine3" / "ENGINE3_STAGE_F_HUMAN_REFERENCE_OPERATIONAL_GUIDE_FREEZE_MANIFEST.json")
+                        .read_text(encoding="utf-8"))
+    assert freeze["operational_guide_sha256"] == OPERATIONAL_GUIDE_SHA256
+    assert freeze["locked_protocol_sha256"] == LOCKED_PROTOCOL_SHA256
+
+
+def test_dry_run_has_records_for_every_role():
+    assert REFERENCE_ITEMS
+    assert any(_records(item)[2] is not None for item in REFERENCE_ITEMS)
+
+
+@pytest.mark.parametrize("item", REFERENCE_ITEMS, ids=[_ids(p) for p in REFERENCE_ITEMS])
+def test_every_primary_a_primary_b_and_adjudication_record_carries_the_three_hashes(item):
+    packet = item[3]
+    expected = _expected_provenance(packet)
+    for record in (r for r in _records(item) if r is not None):
+        assert {name: getattr(record, name) for name in PROVENANCE_FIELDS} == expected, type(record).__name__
+        assert record.locked_protocol_sha256 == LOCKED_PROTOCOL_SHA256
+        assert record.operational_guide_sha256 == OPERATIONAL_GUIDE_SHA256
+        assert record.annotation_packet_sha256 == annotation_packet_sha256(packet)
+
+
+def test_records_have_no_protocol_version_fallback_field():
+    for cls in (PrimaryAnnotation, Adjudication):
+        names = {f.name for f in dataclasses.fields(cls)}
+        assert set(PROVENANCE_FIELDS) <= names
+        assert "protocol_version_sha256" not in names
+
+
+def test_a_record_with_only_a_protocol_version_hash_cannot_be_built():
+    case, _, _, packet = _item("F-DRY-01", "A-EMAIL")
+    a, _ = ad.primaries(case, "A-EMAIL", packet)
+    header = dict(alias=a.alias, role=a.role, packet_id=a.packet_id, recorded_at=a.recorded_at,
+                  attestation=a.attestation, segments=a.segments)
+    with pytest.raises(TypeError):
+        PrimaryAnnotation(**header, protocol_version_sha256=LOCKED_PROTOCOL_SHA256)
+    # Putting the protocol hash in every provenance slot does not pass either.
+    with pytest.raises(Engine3ValidationError):
+        PrimaryAnnotation(**header, locked_protocol_sha256=LOCKED_PROTOCOL_SHA256,
+                          operational_guide_sha256=LOCKED_PROTOCOL_SHA256,
+                          annotation_packet_sha256=LOCKED_PROTOCOL_SHA256)
+    b_like = PrimaryAnnotation(**dict(header, alias="other"), locked_protocol_sha256=LOCKED_PROTOCOL_SHA256,
+                               operational_guide_sha256=OPERATIONAL_GUIDE_SHA256,
+                               annotation_packet_sha256=LOCKED_PROTOCOL_SHA256)
+    with pytest.raises(Engine3ValidationError):
+        finalize_reference(packet, a, replace(b_like, role=annotation.AnnotatorRole.PRIMARY_B), None)
+
+
+@pytest.mark.parametrize("field", PROVENANCE_FIELDS)
+@pytest.mark.parametrize("value", [None, "", "x", "A" * 64, "0" * 63, "0" * 64])
+def test_missing_or_wrong_provenance_hashes_fail_closed(field, value):
+    case, _, _, packet = _item("F-DRY-09", "A-CALL")
+    a, b = ad.primaries(case, "A-CALL", packet)
+    j = ad.adjudication(case, "A-CALL", packet)
+    for record in (a, b, j):
+        if field == "annotation_packet_sha256" and value == "0" * 64:
+            # Well-formed but not this packet: caught where the record is bound to its packet.
+            broken = replace(record, **{field: value})
+            records = [a, b, j]
+            records[records.index(record)] = broken
+            with pytest.raises(Engine3ValidationError):
+                finalize_reference(packet, *records)
+        else:
+            with pytest.raises(Engine3ValidationError):
+                replace(record, **{field: value})
+
+
+def test_records_missing_a_provenance_field_cannot_be_built():
+    case, _, _, packet = _item("F-DRY-01", "A-EMAIL")
+    a, _ = ad.primaries(case, "A-EMAIL", packet)
+    full = {f.name: getattr(a, f.name) for f in dataclasses.fields(PrimaryAnnotation)}
+    for name in PROVENANCE_FIELDS:
+        partial = {k: v for k, v in full.items() if k != name}
+        with pytest.raises(TypeError):
+            PrimaryAnnotation(**partial)
+
+
+def test_a_record_made_on_another_packet_is_rejected_even_with_the_same_packet_id():
+    case, _, _, packet = _item("F-DRY-01", "A-EMAIL")
+    a, b = ad.primaries(case, "A-EMAIL", packet)
+    shown = replace(packet, guide={**packet.guide, "fields": ["claim_type"]})  # same packet_id, different content
+    assert shown.packet_id == packet.packet_id
+    b_other = replace(b, annotation_packet_sha256=annotation_packet_sha256(shown))
+    with pytest.raises(Engine3ValidationError):
+        finalize_reference(packet, a, b_other, None)
+    assert finalize_reference(packet, a, b, None).reference_complete
+
+
+def test_packet_hash_is_the_sha256_of_the_exact_visible_packet_json():
+    for _, _, _, packet in PACKETS:
+        assert annotation_packet_sha256(packet) == hashlib.sha256(packet.to_json().encode("utf-8")).hexdigest()
+    assert len({annotation_packet_sha256(p[3]) for p in PACKETS}) == len({p[3].to_json() for p in PACKETS})
+    with pytest.raises(Engine3ValidationError):
+        annotation_packet_sha256(json.loads(PACKETS[0][3].to_json()))
+
+
+def _visible_changes(packet):
+    segment = packet.segments[0]
+    item = packet.grounding_items[0]
+    return {
+        "rendered_text": replace(packet, rendered_text=packet.rendered_text + " "),
+        "segment_text": replace(packet, segments=(replace(segment, text=segment.text + "!"),) + packet.segments[1:]),
+        "grounding_value": replace(packet, grounding_items=(replace(item, exact_value=item.exact_value + "0"),)
+                                   + packet.grounding_items[1:]),
+        "grounding_disclosure": replace(packet, grounding_items=(replace(item, approved_specificity=0 if
+                                        item.approved_specificity else 90),) + packet.grounding_items[1:]),
+        "guide": replace(packet, guide={**packet.guide, "experiment_flags": ["formatting_variant"]}),
+        "context_label": replace(packet, context_label="context-000000000000"),
+        "preparation_goal": replace(packet, preparation_goal=None),
+    }
+
+
+@pytest.mark.parametrize("change", sorted(_visible_changes(_item("F-DRY-01", "A-EMAIL")[3])))
+def test_packet_hash_changes_when_visible_packet_content_changes(change):
+    packet = _item("F-DRY-01", "A-EMAIL")[3]
+    changed = _visible_changes(packet)[change]
+    assert changed.to_json() != packet.to_json()
+    assert annotation_packet_sha256(changed) != annotation_packet_sha256(packet)
+
+
+def test_packet_hash_ignores_hidden_model_annotations_and_run_metadata():
+    ctx = ad.contexts()
+    case, proposal, artifact, packet = _item("F-DRY-01", "A-EMAIL")
+    # Different model annotations, model segment ids, and artifact id: nothing a reviewer sees changes.
+    relabelled = replace(artifact, artifact_id="A-HIDDEN",
+                         segments=tuple(replace(s, segment_id=f"HIDDEN-{n}", specificity=90, grounding_refs=(),
+                                                prescribes_buyer_choice=not s.prescribes_buyer_choice)
+                                        for n, s in enumerate(artifact.segments)))
+    rebuilt = ad.packet(case, relabelled, ctx)
+    assert annotation_packet_sha256(rebuilt) == annotation_packet_sha256(packet)
+    # A different run (another configuration id, arm, repeat, and run kind) of the same prose: same hash.
+    other_run = dict(case, repeat_index=case["repeat_index"] + 1)
+    assert annotation_packet_sha256(ad.packet(other_run, artifact, ctx)) == annotation_packet_sha256(packet)
+    assert proposal.binding.repeat_index == case["repeat_index"]
+    # The provenance builder takes only the packet; no run, proposal, or model value can reach it.
+    assert list(inspect.signature(record_provenance).parameters) == ["packet"]
+    assert list(inspect.signature(annotation_packet_sha256).parameters) == ["packet"]

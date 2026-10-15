@@ -9,6 +9,10 @@ packet segment ids.
 Reference records follow the protocol (sections 6 to 9). Annotation statuses
 and experiment flags are experiment metadata, never Engine 3 states, and are
 never sent to Stage D. A model never creates, edits, or initializes a record.
+
+Every record carries three provenance hashes (HARNESS_AMENDMENT_003): the
+historical locked protocol, the frozen operational guide, and the exact packet
+the reviewer saw. There is no single protocol-version hash to fall back on.
 """
 
 from __future__ import annotations
@@ -81,6 +85,13 @@ _VALUE_CLAIM_FIELDS = frozenset({
 })
 _NO_CLAIM_TYPES = frozenset({ClaimType.QUESTION, ClaimType.COURTESY_OR_TRANSITION})
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+
+# HARNESS_AMENDMENT_003: exact SHA-256 of the artifacts that govern every human annotation event.
+# The historical locked protocol (governing design record; not shown to annotators).
+LOCKED_PROTOCOL_SHA256 = "cba979c91cdcc96f419b0f3758cadd651f3427064a7f66ebebd23929c623b5a4"
+# The frozen decontaminated operational guide annotators actually use.
+OPERATIONAL_GUIDE_SHA256 = "fb4f0510254649dadfc68c06bb76bd1dfab73e2d33bc0db325faf791e61b9011"
+PROVENANCE_FIELDS = ("locked_protocol_sha256", "operational_guide_sha256", "annotation_packet_sha256")
 _UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 
 
@@ -238,6 +249,25 @@ def build_annotation_packet(
     )
 
 
+def annotation_packet_sha256(packet: AnnotationPacket) -> str:
+    """SHA-256 of the exact packet shown to the reviewer: the UTF-8 bytes of its canonical JSON, guide included.
+
+    A packet holds only human-visible content, so model annotations and run metadata cannot change this hash.
+    """
+    if not isinstance(packet, AnnotationPacket):
+        raise Engine3ValidationError("packet has wrong type")
+    return hashlib.sha256(packet.to_json().encode("utf-8")).hexdigest()
+
+
+def record_provenance(packet: AnnotationPacket) -> dict[str, str]:
+    """The three provenance hashes for a record made on this packet (HARNESS_AMENDMENT_003)."""
+    return {
+        "locked_protocol_sha256": LOCKED_PROTOCOL_SHA256,
+        "operational_guide_sha256": OPERATIONAL_GUIDE_SHA256,
+        "annotation_packet_sha256": annotation_packet_sha256(packet),
+    }
+
+
 def annotator_order(packet_ids: tuple[str, ...], seed: str) -> tuple[str, ...]:
     """Deterministic per-annotator pseudorandom order from a recorded seed (protocol 4.3)."""
     if not isinstance(seed, str) or not seed:
@@ -371,13 +401,19 @@ class HumanPolicyAttestation:
         return tuple(getattr(self, name) for name in POLICY_ATTESTATIONS)
 
 
-def _record_header(alias: object, packet_id: object, protocol: object, recorded_at: object, where: str) -> None:
-    _text(alias, f"{where}.alias")
-    if not isinstance(packet_id, str) or not _DIGEST.fullmatch(packet_id):
+def _record_header(record, where: str) -> None:
+    _text(record.alias, f"{where}.alias")
+    if not isinstance(record.packet_id, str) or not _DIGEST.fullmatch(record.packet_id):
         raise Engine3ValidationError(f"{where}.packet_id must be a packet digest")
-    if not isinstance(protocol, str) or not _DIGEST.fullmatch(protocol):
-        raise Engine3ValidationError(f"{where}.protocol_version_sha256 must be SHA-256 hex")
-    if not isinstance(recorded_at, str) or not _UTC.fullmatch(recorded_at):
+    for name in PROVENANCE_FIELDS:
+        value = getattr(record, name)
+        if not isinstance(value, str) or not _DIGEST.fullmatch(value):
+            raise Engine3ValidationError(f"{where}.{name} must be SHA-256 hex")
+    if record.locked_protocol_sha256 != LOCKED_PROTOCOL_SHA256:
+        raise Engine3ValidationError(f"{where}.locked_protocol_sha256 is not the historical locked protocol")
+    if record.operational_guide_sha256 != OPERATIONAL_GUIDE_SHA256:
+        raise Engine3ValidationError(f"{where}.operational_guide_sha256 is not the frozen operational guide")
+    if not isinstance(record.recorded_at, str) or not _UTC.fullmatch(record.recorded_at):
         raise Engine3ValidationError(f"{where}.recorded_at must be RFC 3339 UTC")
 
 
@@ -386,13 +422,15 @@ class PrimaryAnnotation:
     alias: str
     role: AnnotatorRole
     packet_id: str
-    protocol_version_sha256: str
+    locked_protocol_sha256: str
+    operational_guide_sha256: str
+    annotation_packet_sha256: str
     recorded_at: str
     attestation: HumanPolicyAttestation
     segments: tuple[SegmentAnnotation, ...]
 
     def __post_init__(self) -> None:
-        _record_header(self.alias, self.packet_id, self.protocol_version_sha256, self.recorded_at, "PrimaryAnnotation")
+        _record_header(self, "PrimaryAnnotation")
         if not isinstance(self.role, AnnotatorRole):
             raise Engine3ValidationError("PrimaryAnnotation.role has wrong type")
         if not isinstance(self.attestation, HumanPolicyAttestation):
@@ -416,13 +454,15 @@ class AdjudicatedSegment:
 class Adjudication:
     alias: str
     packet_id: str
-    protocol_version_sha256: str
+    locked_protocol_sha256: str
+    operational_guide_sha256: str
+    annotation_packet_sha256: str
     recorded_at: str
     segments: tuple[AdjudicatedSegment, ...]
     attestation: HumanPolicyAttestation | None = None
 
     def __post_init__(self) -> None:
-        _record_header(self.alias, self.packet_id, self.protocol_version_sha256, self.recorded_at, "Adjudication")
+        _record_header(self, "Adjudication")
         if not isinstance(self.segments, tuple) or not all(isinstance(s, AdjudicatedSegment) for s in self.segments):
             raise Engine3ValidationError("Adjudication.segments has wrong type")
         if self.attestation is not None and not isinstance(self.attestation, HumanPolicyAttestation):
@@ -503,8 +543,8 @@ def finalize_reference(
             raise Engine3ValidationError("the adjudicator must be neither primary annotator")
     if any(r.packet_id != packet.packet_id for r in records):
         raise Engine3ValidationError("a reference record is not bound to this packet")
-    if len({r.protocol_version_sha256 for r in records}) != 1:
-        raise Engine3ValidationError("reference records use different protocol versions")
+    if any(r.annotation_packet_sha256 != annotation_packet_sha256(packet) for r in records):
+        raise Engine3ValidationError("a reference record was not made on this exact packet")
     for primary in (primary_a, primary_b):
         if tuple(s.packet_segment_id for s in primary.segments) != packet.segment_ids:
             raise Engine3ValidationError("a primary annotation must cover every packet segment in order")

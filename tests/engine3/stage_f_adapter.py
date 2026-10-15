@@ -20,6 +20,7 @@ from experiments.engine3_stage_f.annotation import (
     attestation_from_dict,
     build_annotation_packet,
     finalize_reference,
+    record_provenance,
     segment_annotation_from_dict,
 )
 from experiments.engine3_stage_f.contexts import apply_context_delta
@@ -32,6 +33,7 @@ INPUTS_PATH = HERE / "fixtures" / "ENGINE3_STAGE_F_DRY_RUN_INPUTS.json"
 ORACLE_PATH = HERE / "fixtures" / "ENGINE3_STAGE_F_DRY_RUN_ORACLE.json"
 SPEC_PATH = REPO / "docs" / "engine3" / "ENGINE3_STAGE_F_EXPERIMENT_SPEC.json"
 PROTOCOL_PATH = REPO / "docs" / "engine3" / "ENGINE3_STAGE_F_HUMAN_REFERENCE_ANNOTATION_PROTOCOL.md"
+GUIDE_PATH = REPO / "docs" / "engine3" / "ENGINE3_STAGE_F_HUMAN_REFERENCE_OPERATIONAL_GUIDE.md"
 
 
 def load_inputs():
@@ -48,6 +50,10 @@ def load_spec():
 
 def protocol_sha256() -> str:
     return hashlib.sha256(PROTOCOL_PATH.read_bytes()).hexdigest()
+
+
+def guide_sha256() -> str:
+    return hashlib.sha256(GUIDE_PATH.read_bytes()).hexdigest()
 
 
 def contexts():
@@ -99,7 +105,7 @@ def _primary(record, role, alias, pkt):
         alias=alias,
         role=role,
         packet_id=pkt.packet_id,
-        protocol_version_sha256=protocol_sha256(),
+        **record_provenance(pkt),
         recorded_at=record["recorded_at"],
         attestation=attestation_from_dict(record["attestation"]),
         segments=tuple(segment_annotation_from_dict(sid, s) for sid, s in zip(pkt.segment_ids, record["segments"])),
@@ -120,7 +126,7 @@ def adjudication(case, artifact_id, pkt):
     return Adjudication(
         alias=load_inputs()["annotator_aliases"]["adjudicator"],
         packet_id=pkt.packet_id,
-        protocol_version_sha256=protocol_sha256(),
+        **record_provenance(pkt),
         recorded_at=record["recorded_at"],
         segments=tuple(
             AdjudicatedSegment(
