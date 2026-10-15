@@ -61,6 +61,34 @@ def test_manifest_records_no_execution_and_unresolved_limitation():
         "O-3": "PRE_RUN_REQUIRED", "O-5": "PRE_RUN_REQUIRED", "O-6": "PRE_RUN_REQUIRED"}
 
 
+def test_harness_amendment_001_is_recorded_and_hash_bound():
+    assert [a["id"] for a in MANIFEST["harness_amendments"]] == ["HARNESS_AMENDMENT_001"]
+    amendment = MANIFEST["harness_amendments"][0]
+    assert amendment["applied"] is True and amendment["date"] == "2026-10-15"
+    assert amendment["files_modified"] == ["experiments/engine3_stage_f/readiness.py"]
+    assert _sha256(REPO / amendment["record"]) == amendment["record_sha256"]
+    assert MANIFEST["status"] == "LOCKED_OFFLINE_HARNESS_NOT_EXECUTED"
+    assert "HARNESS_AMENDMENT_001" in REPORT_PATH.read_text(encoding="utf-8")
+
+
+def test_o6_lock_time_status_is_preserved_and_current_status_is_bound_to_the_freeze():
+    # 8. Historical: O-6 was PRE_RUN_REQUIRED when the harness was locked.
+    assert MANIFEST["o6_status_at_harness_lock"] == "PRE_RUN_REQUIRED"
+    assert {i["id"]: i["status"] for i in MANIFEST["pre_run_required"]}["O-6"] == "PRE_RUN_REQUIRED"
+    # 7. Current: O-6 is RESOLVED_FROZEN, bound to the unchanged freeze manifest; O-3 and O-5 stay unresolved.
+    current = MANIFEST["pre_run_state_current"]
+    assert MANIFEST["o6_current_status"] == "RESOLVED_FROZEN"
+    assert current["status"] == {"O-3": "PRE_RUN_REQUIRED", "O-5": "PRE_RUN_REQUIRED", "O-6": "RESOLVED_FROZEN"}
+    assert current["pilot_readiness"] is False
+    # 9. The O-6 freeze manifest and frozen corpus are byte-identical to the bound hashes.
+    freeze_path = REPO / current["o6_freeze_manifest"]
+    assert current["o6_freeze_manifest"] == "docs/engine3/ENGINE3_STAGE_F_ARM_A_FREEZE_MANIFEST.json"
+    assert _sha256(freeze_path) == current["o6_freeze_manifest_sha256"]
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    assert freeze["status"] == "O6_RESOLVED_FROZEN" and current["o6_frozen_file"] == freeze["frozen_file"]
+    assert _sha256(REPO / freeze["frozen_file"]) == freeze["frozen_file_sha256"] == current["o6_frozen_file_sha256"]
+
+
 def test_report_states_status_limitation_and_claim_boundary():
     report = REPORT_PATH.read_text(encoding="utf-8")
     for text in ("LOCKED_OFFLINE_HARNESS_NOT_EXECUTED", "E3-E-SEM-001", "NOT_EVALUABLE", "PRE_RUN_REQUIRED",

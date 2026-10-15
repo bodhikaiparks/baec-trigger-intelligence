@@ -3,8 +3,8 @@
 **Project:** BAEC Trigger Intelligence\
 **Engine:** BAEC Engine 3: Re-engagement Preparation\
 **Stage:** F (experimental harness, offline)\
-**Status:** LOCKED_OFFLINE_HARNESS_NOT_EXECUTED (lock date 2026-10-14). Owner approved the architecture; the zero-denominator reporting correction (section 9) was applied before the lock. No live model has been called. No pilot or main experiment has been run. No experiment result exists.\
-**Date:** October 14, 2026\
+**Status:** LOCKED_OFFLINE_HARNESS_NOT_EXECUTED (lock date 2026-10-14). Owner approved the architecture; the zero-denominator reporting correction (section 9) was applied before the lock. No live model has been called. No pilot or main experiment has been run. No experiment result exists. Post-lock amendment `HARNESS_AMENDMENT_001` (October 15, 2026, owner-approved) changed the readiness author-independence check only (section 16).\
+**Date:** October 14, 2026 (amended October 15, 2026)\
 **Base commit:** `c81d00343d96683514dd38f43d11a6ebae6d104e` (Stage F design, `LOCKED_DESIGN_NO_LIVE_EXECUTION`)\
 **Manifest:** `ENGINE3_STAGE_F_HARNESS_MANIFEST.json`; verifier: `scripts/verify_engine3_stage_f_harness.py`
 
@@ -27,7 +27,8 @@ Every rule in the harness is an IMPLEMENTATION rule (`docs/RESEARCH_CONTRACT.md`
 | `pilot_executed` | false |
 | `main_experiment_executed` | false |
 | E3-E-SEM-001 `MODEL_SEMANTIC_ANNOTATION_NOT_AUTHORITATIVE` | **not resolved** |
-| O-3, O-5, O-6 | **PRE_RUN_REQUIRED** (no value supplied) |
+| O-3, O-5, O-6 at harness lock (2026-10-14) | **PRE_RUN_REQUIRED** (no value supplied) |
+| Current pre-run state | O-3 and O-5 `PRE_RUN_REQUIRED`; O-6 `RESOLVED_FROZEN` by the later Arm A freeze (`ENGINE3_STAGE_F_ARM_A_FREEZE_MANIFEST.json`, hash-bound in the harness manifest) |
 
 Implementing the harness does not show that any model annotates reliably. It only makes the locked experiment executable later, after separate approval.
 
@@ -148,9 +149,9 @@ Tests use only tiny synthetic tables. No experiment result has been computed.
 
 `check_pilot_readiness(staffing, configuration, supplement)` returns unresolved items unless:
 
-- **O-3:** two distinct primary aliases and a separate adjudicator alias, frozen;
+- **O-3:** two primary aliases and a separate adjudicator alias, all distinct after strip and casefold (`HARNESS_AMENDMENT_001`), frozen;
 - **O-5:** configuration id, model identifier, model version, prompt SHA-256, a non-empty sampling configuration, and the harness output-schema version, frozen;
-- **O-6:** exactly 16 Arm A supplement artifacts, each with a SHA-256, human-approved, frozen, with authors recorded, and with at least one primary annotator who is not an author.
+- **O-6:** exactly 16 Arm A supplement artifacts, each with a SHA-256, human-approved, frozen, with authors recorded, and with neither primary annotator among its authors. Aliases are compared after strip and casefold (`HARNESS_AMENDMENT_001`, section 16). Both primary aliases must be non-empty for author independence to be checked. The adjudicator is not checked against authors.
 
 With no inputs, all three are unresolved. The repository supplies no readiness record, and a test checks that no harness or script constructs one. Met preconditions do not authorize a pilot: `owner_approval_still_required` is always true, and no executor exists.
 
@@ -158,7 +159,7 @@ With no inputs, all three are unresolved. The repository supplies no readiness r
 
 `tests/engine3/test_engine3_stage_f_static_audit.py` is an AST audit of every harness module and of the harness verifier. It does not rely on the legacy Stage D regex test. Categories: model SDK import, network import, process or dynamic import, credential access, model or network call surface, outbound action definitions (and any `ActionAttempt` member other than `NONE`), Engine 1/2 coupling and write calls, test-fixture imports, fixture and oracle tokens, dynamic code, file I/O, and unlisted imports. It includes planted-violation self-tests for every category. The verifier may start only `sys.executable -m pytest`, without a shell.
 
-`scripts/verify_engine3_stage_f_harness.py` is separate from the design verifier, which is unchanged. It checks the Stage F design artifacts and design verifier, the Stage A to E locked hashes, the harness manifest hashes and coverage, input and oracle separation, the no-execution record, that O-3, O-5, and O-6 remain `PRE_RUN_REQUIRED`, and then runs the harness tests.
+`scripts/verify_engine3_stage_f_harness.py` is separate from the design verifier, which is unchanged. It checks the Stage F design artifacts and design verifier, the Stage A to E locked hashes, the harness manifest hashes and coverage, input and oracle separation, the no-execution record, that O-3, O-5, and O-6 were `PRE_RUN_REQUIRED` at harness lock, the current pre-run state (O-3 and O-5 `PRE_RUN_REQUIRED`, O-6 `RESOLVED_FROZEN` bound to the unchanged O-6 freeze manifest and frozen corpus), the recorded amendments, and then runs the harness tests.
 
 ## 12. Implementation choices
 
@@ -194,9 +195,9 @@ These are implementation choices, not research findings. None changes a locked t
 
 | Suite | Result |
 |---|---|
-| Stage F harness tests (`tests/engine3/test_engine3_stage_f_*.py`) | 253 passed |
-| `tests/engine3` | 487 passed |
-| Full repository (`pytest -q`) | 7284 passed, 2 deselected, 0 failed |
+| Stage F harness tests (`tests/engine3/test_engine3_stage_f_*.py`) | 285 passed (253 at lock; 32 added by `HARNESS_AMENDMENT_001`) |
+| `tests/engine3` | 519 passed (487 at lock) |
+| Full repository (`pytest -q`) | 7316 passed, 2 deselected, 0 failed (7284 at lock) |
 | Locked Engine 1/2 public tests | 183 passed |
 
 These are software tests over synthetic inputs. They are not experiment results.
@@ -213,3 +214,19 @@ These are software tests over synthetic inputs. They are not experiment results.
 | Harness acquires seller-action capability | Not triggered. The static audit checks this. |
 | The harness implies E3-E-SEM-001 is resolved | Not triggered |
 | Design thresholds need changing | Not triggered |
+
+## 16. Post-lock amendment HARNESS_AMENDMENT_001
+
+**Date:** October 15, 2026. **Owner decision:** Option B. **Record:** `ENGINE3_STAGE_F_HARNESS_AMENDMENT_001.md`.
+
+Scope: the readiness author-independence and reviewer-distinctness checks in `readiness.py`, plus a manifest clarification of O-6 state.
+
+| | Behaviour |
+|---|---|
+| Author independence, before | An artifact failed only when **both** primary aliases were among its author aliases (exact string). |
+| Author independence, after | An artifact fails when **either** primary alias is among its author aliases, comparing aliases after strip and casefold. No substring or fuzzy matching. If either primary alias is empty, author independence is reported as not checkable. |
+| Reviewer distinctness, before | Primary A, Primary B, and adjudicator aliases had to differ by exact string, so `R1` and `r1` counted as two reviewers. |
+| Reviewer distinctness, after | The three aliases must be distinct after strip and casefold. Stored aliases are unchanged; normalization is for comparison only. |
+| O-6 state in the manifest | `pre_run_required` is kept as the lock-time record (O-6 `PRE_RUN_REQUIRED` on 2026-10-14). `pre_run_state_current` records O-6 `RESOLVED_FROZEN`, bound by SHA-256 to the unchanged O-6 freeze manifest and frozen corpus. |
+
+The adjudicator is not checked against authors; independence from drafting stays a preferred research configuration. Status remains `LOCKED_OFFLINE_HARNESS_NOT_EXECUTED`. The Stage F design, thresholds A to G, arms, annotation protocol, comparison and decision-rule semantics, the O-6 frozen corpus and its hashes, and the execution boundaries are unchanged. Readiness tests were extended with regression cases (`tests/engine3/test_engine3_stage_f_readiness.py`); the existing test supplement's author alias was changed from a primary alias to a separate test author, because the old fixture relied on the weaker rule. The harness manifest hashes were regenerated and record the amendment.

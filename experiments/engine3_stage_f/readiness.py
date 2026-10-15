@@ -21,6 +21,11 @@ def _filled(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _alias_key(alias: str) -> str:
+    """HARNESS_AMENDMENT_001: exact match after strip and casefold. No substring or fuzzy matching."""
+    return alias.strip().casefold()
+
+
 @dataclass(frozen=True)
 class AnnotatorStaffing:
     """O-3: two independent primary annotators plus a separate adjudicator."""
@@ -77,7 +82,7 @@ def _o3(staffing: AnnotatorStaffing | None) -> list[str]:
     aliases = (staffing.primary_a_alias, staffing.primary_b_alias, staffing.adjudicator_alias)
     if not all(_filled(a) for a in aliases):
         problems.append("every annotator alias must be non-empty")
-    elif len(set(aliases)) != 3:
+    elif len({_alias_key(a) for a in aliases}) != 3:  # HARNESS_AMENDMENT_001: distinct after strip and casefold
         problems.append("two distinct primary annotators and a separate adjudicator are required")
     if staffing.frozen is not True:
         problems.append("annotator staffing is not frozen")
@@ -119,9 +124,10 @@ def _o6(supplement: tuple[SupplementArtifact, ...] | None, staffing: AnnotatorSt
         problems.append("supplement artifact ids must be unique")
     if len({a.artifact_sha256 for a in supplement}) != len(supplement):
         problems.append("supplement artifact hashes must be unique")
+    # HARNESS_AMENDMENT_001: either primary being an author fails. The adjudicator is not checked here.
     primaries = None
-    if isinstance(staffing, AnnotatorStaffing):
-        primaries = {staffing.primary_a_alias, staffing.primary_b_alias}
+    if isinstance(staffing, AnnotatorStaffing) and _filled(staffing.primary_a_alias) and _filled(staffing.primary_b_alias):
+        primaries = {_alias_key(staffing.primary_a_alias), _alias_key(staffing.primary_b_alias)}
     for a in supplement:
         if not _filled(a.artifact_id):
             problems.append("a supplement artifact id is empty")
@@ -135,8 +141,8 @@ def _o6(supplement: tuple[SupplementArtifact, ...] | None, staffing: AnnotatorSt
             problems.append(f"{a.artifact_id}: authors must be recorded")
         elif primaries is None:
             problems.append(f"{a.artifact_id}: author independence cannot be checked without O-3")
-        elif not primaries - set(a.author_aliases):
-            problems.append(f"{a.artifact_id}: its authors would be the sole primary annotators")
+        elif primaries & {_alias_key(x) for x in a.author_aliases}:
+            problems.append(f"{a.artifact_id}: a primary annotator is one of its authors")
     return problems
 
 

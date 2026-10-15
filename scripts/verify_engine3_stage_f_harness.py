@@ -25,6 +25,7 @@ STAGE_D_MANIFEST = DOCS / "ENGINE3_STAGE_D_IMPLEMENTATION_MANIFEST.json"
 DESIGN_VERIFIER = REPO / "scripts" / "verify_engine3_stage_f_design.py"
 HARNESS_DIR = REPO / "experiments" / "engine3_stage_f"
 INPUTS = REPO / "tests" / "engine3" / "fixtures" / "ENGINE3_STAGE_F_DRY_RUN_INPUTS.json"
+O6_FREEZE_MANIFEST = "docs/engine3/ENGINE3_STAGE_F_ARM_A_FREEZE_MANIFEST.json"
 ORACLE = REPO / "tests" / "engine3" / "fixtures" / "ENGINE3_STAGE_F_DRY_RUN_ORACLE.json"
 
 STATUS = "LOCKED_OFFLINE_HARNESS_NOT_EXECUTED"
@@ -37,7 +38,13 @@ NO_EXECUTION = {
     "pilot_executed": False,
     "main_experiment_executed": False,
 }
-PRE_RUN_REQUIRED = ("O-3", "O-5", "O-6")
+PRE_RUN_REQUIRED = ("O-3", "O-5", "O-6")  # state at harness lock (2026-10-14)
+# Current state after later preregistration work. O-6 was resolved by the Arm A freeze.
+PRE_RUN_CURRENT = {"O-3": "PRE_RUN_REQUIRED", "O-5": "PRE_RUN_REQUIRED", "O-6": "RESOLVED_FROZEN"}
+# Post-lock amendments: id -> (date, record path). Each must be recorded in the manifest with the record's hash.
+AMENDMENTS = {
+    "HARNESS_AMENDMENT_001": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_001.md"),
+}
 HARNESS_GLOBS = (
     "experiments/engine3_stage_f/*.py",
     "tests/engine3/stage_f_adapter.py",
@@ -108,10 +115,19 @@ def _check_manifest(harness: dict, failures: list[str]) -> None:
     if limitation.get("id") != "E3-E-SEM-001" or limitation.get("resolved") is not False:
         failures.append("harness manifest: E3-E-SEM-001 must remain unresolved")
     items = {i.get("id"): i.get("status") for i in harness.get("pre_run_required", [])}
-    if items != {i: "PRE_RUN_REQUIRED" for i in PRE_RUN_REQUIRED}:
-        failures.append("harness manifest: O-3, O-5, O-6 must remain PRE_RUN_REQUIRED")
+    if items != {i: "PRE_RUN_REQUIRED" for i in PRE_RUN_REQUIRED} or harness.get("o6_status_at_harness_lock") != "PRE_RUN_REQUIRED":
+        failures.append("harness manifest: lock-time O-3, O-5, O-6 must remain recorded as PRE_RUN_REQUIRED")
+    _check_current_pre_run(harness, failures)
     if harness.get("pre_run_records_supplied") is not False:
         failures.append("harness manifest: no pre-run record may be recorded as supplied")
+    recorded = {a.get("id"): a for a in harness.get("harness_amendments", [])}
+    if set(recorded) != set(AMENDMENTS):
+        failures.append(f"harness manifest: amendments must be exactly {sorted(AMENDMENTS)}")
+    for amendment_id, (date, record) in AMENDMENTS.items():
+        entry = recorded.get(amendment_id, {})
+        if entry.get("applied") is not True or entry.get("date") != date or entry.get("record") != record:
+            failures.append(f"harness manifest: {amendment_id} must be applied on {date} with record {record}")
+        _check_hashes({record: entry.get("record_sha256")}, f"amendment {amendment_id}", failures)
     files = harness.get("harness_files", {})
     _check_hashes(files, "harness", failures)
     found = {p.relative_to(REPO).as_posix() for pattern in HARNESS_GLOBS for p in REPO.glob(pattern)}
@@ -120,6 +136,23 @@ def _check_manifest(harness: dict, failures: list[str]) -> None:
                         f"missing={sorted(set(files) - found)}")
     if HARNESS_MANIFEST.relative_to(REPO).as_posix() in files:
         failures.append("harness manifest must not hash itself")
+
+
+def _check_current_pre_run(harness: dict, failures: list[str]) -> None:
+    current = harness.get("pre_run_state_current", {})
+    if current.get("status") != PRE_RUN_CURRENT or harness.get("o6_current_status") != "RESOLVED_FROZEN":
+        failures.append(f"harness manifest: current pre-run state must be {PRE_RUN_CURRENT}")
+    if current.get("o6_freeze_manifest") != O6_FREEZE_MANIFEST:
+        failures.append(f"harness manifest: O-6 current status must reference {O6_FREEZE_MANIFEST}")
+        return
+    _check_hashes({O6_FREEZE_MANIFEST: current.get("o6_freeze_manifest_sha256")}, "O-6 freeze manifest", failures)
+    freeze = _load(REPO / O6_FREEZE_MANIFEST)
+    if freeze.get("status") != "O6_RESOLVED_FROZEN" or {
+            i.get("id"): i.get("status") for i in freeze.get("pre_run_required", [])} != PRE_RUN_CURRENT:
+        failures.append("O-6 freeze manifest does not record O-6 RESOLVED_FROZEN with O-3 and O-5 unresolved")
+    if current.get("o6_frozen_file") != freeze.get("frozen_file"):
+        failures.append("harness manifest: O-6 frozen file does not match the freeze manifest")
+    _check_hashes({freeze.get("frozen_file", ""): freeze.get("frozen_file_sha256")}, "O-6 frozen corpus", failures)
 
 
 def _keys(value):
@@ -165,7 +198,10 @@ def main() -> int:
     print(f"PASS  Harness file hashes and coverage: {len(harness['harness_files'])}")
     print("PASS  Dry-run inputs and oracle are separate; harness code references neither")
     print("PASS  No-execution record: " + ", ".join(f"{k}={v}" for k, v in NO_EXECUTION.items()))
-    print(f"PASS  Pre-run items remain PRE_RUN_REQUIRED: {', '.join(PRE_RUN_REQUIRED)}")
+    print(f"PASS  Pre-run items at harness lock were PRE_RUN_REQUIRED: {', '.join(PRE_RUN_REQUIRED)}")
+    print("PASS  Current pre-run state: " + ", ".join(f"{k}={v}" for k, v in PRE_RUN_CURRENT.items())
+          + "; O-6 freeze manifest hash and frozen corpus match")
+    print(f"PASS  Post-lock amendments recorded with record hashes: {', '.join(AMENDMENTS)}")
     print("PASS  No model SDK or network import in harness code or this verifier")
 
     tests = sorted(rel for rel in harness["harness_files"] if Path(rel).name.startswith("test_"))
