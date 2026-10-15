@@ -199,7 +199,7 @@ def _step_recognize() -> None:
     if decision is None:
         _html('<div class="bt-question">Does this evidence correspond to the buyer&rsquo;s previously stated '
               "condition?</div>")
-        yes, no, _ = st.columns([1.35, 1, 2.2])
+        yes, no, _ = st.columns([1.4, 1.4, 1.75])
         with yes:
             st.button("Yes — verify correspondence", key="verify_yes", type="primary",
                       on_click=_decide, args=("verified",), use_container_width=True)
