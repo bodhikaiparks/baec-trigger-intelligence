@@ -3,7 +3,7 @@
 **Project:** BAEC Trigger Intelligence\
 **Engine:** BAEC Engine 3: Re-engagement Preparation\
 **Stage:** F (experimental harness, offline)\
-**Status:** LOCKED_OFFLINE_HARNESS_NOT_EXECUTED (lock date 2026-10-14). Owner approved the architecture; the zero-denominator reporting correction (section 9) was applied before the lock. No live model has been called. No pilot or main experiment has been run. No experiment result exists. Post-lock amendment `HARNESS_AMENDMENT_001` (October 15, 2026, owner-approved) changed the readiness author-independence check only (section 16).\
+**Status:** LOCKED_OFFLINE_HARNESS_NOT_EXECUTED (lock date 2026-10-14). Owner approved the architecture; the zero-denominator reporting correction (section 9) was applied before the lock. No live model has been called. No pilot or main experiment has been run. No experiment result exists. Post-lock amendment `HARNESS_AMENDMENT_001` (October 15, 2026, owner-approved) changed the readiness author-independence check only (section 16). Post-lock amendment `HARNESS_AMENDMENT_002` (October 15, 2026, owner-approved) replaced two evaluation-derived example values in the packet guide only (section 17).\
 **Date:** October 14, 2026 (amended October 15, 2026)\
 **Base commit:** `c81d00343d96683514dd38f43d11a6ebae6d104e` (Stage F design, `LOCKED_DESIGN_NO_LIVE_EXECUTION`)\
 **Manifest:** `ENGINE3_STAGE_F_HARNESS_MANIFEST.json`; verifier: `scripts/verify_engine3_stage_f_harness.py`
@@ -103,7 +103,7 @@ Annotator aliases in the inputs are test placeholders (`DRY-RUN-PLACEHOLDER-*`).
 - artifact type and derived audience;
 - every grounding item with its nine human disclosure fields, marked as untrusted quoted data;
 - Preparation Goal and channel scope (Arm G only);
-- the annotation guide: the existing Engine 3 vocabularies for the eleven fields, the Stage F specificity convention (0/10/90; 50 excluded), the reference-use convention, the declared-value convention, the experiment flags, the five policy attestations, and the statuses `SCORABLE`, `ADJUDICATION_REQUIRED`, `UNSCORABLE_SEGMENT_STRUCTURE`.
+- the annotation guide: the existing Engine 3 vocabularies for the eleven fields, the Stage F specificity convention (0/10/90; 50 excluded), the reference-use convention, the declared-value convention, the experiment flags, the five policy attestations, and the statuses `SCORABLE`, `ADJUDICATION_REQUIRED`, `UNSCORABLE_SEGMENT_STRUCTURE`. Since `HARNESS_AMENDMENT_002`, the guide's examples are fictional values (`$46.00 -> $46`, `over $40 -> higher than $40`), not evaluation values (section 17).
 
 It never contains model annotations, model segment ids, any Stage D result or reason code, the scenario id or family, the arm, the repeat index, the configuration id, the context id (an opaque label is shown), or model identity. Tests check this for every dry-run packet and with planted canary values. The packet id is the deduplication key (same context, artifact type, segment boundaries, and texts). `annotator_order` gives a deterministic per-annotator order from a recorded seed.
 
@@ -195,9 +195,9 @@ These are implementation choices, not research findings. None changes a locked t
 
 | Suite | Result |
 |---|---|
-| Stage F harness tests (`tests/engine3/test_engine3_stage_f_*.py`) | 285 passed (253 at lock; 32 added by `HARNESS_AMENDMENT_001`) |
-| `tests/engine3` | 519 passed (487 at lock) |
-| Full repository (`pytest -q`) | 7316 passed, 2 deselected, 0 failed (7284 at lock) |
+| Stage F harness tests (`tests/engine3/test_engine3_stage_f_*.py`) | 300 passed (253 at lock; 32 added by `HARNESS_AMENDMENT_001`; 15 added by `HARNESS_AMENDMENT_002`) |
+| `tests/engine3` | 558 passed (487 at lock; 519 after `HARNESS_AMENDMENT_001`) |
+| Full repository (`pytest -q`) | 7355 passed, 2 deselected, 0 failed (7284 at lock; 7316 after `HARNESS_AMENDMENT_001`) |
 | Locked Engine 1/2 public tests | 183 passed |
 
 These are software tests over synthetic inputs. They are not experiment results.
@@ -230,3 +230,19 @@ Scope: the readiness author-independence and reviewer-distinctness checks in `re
 | O-6 state in the manifest | `pre_run_required` is kept as the lock-time record (O-6 `PRE_RUN_REQUIRED` on 2026-10-14). `pre_run_state_current` records O-6 `RESOLVED_FROZEN`, bound by SHA-256 to the unchanged O-6 freeze manifest and frozen corpus. |
 
 The adjudicator is not checked against authors; independence from drafting stays a preferred research configuration. Status remains `LOCKED_OFFLINE_HARNESS_NOT_EXECUTED`. The Stage F design, thresholds A to G, arms, annotation protocol, comparison and decision-rule semantics, the O-6 frozen corpus and its hashes, and the execution boundaries are unchanged. Readiness tests were extended with regression cases (`tests/engine3/test_engine3_stage_f_readiness.py`); the existing test supplement's author alias was changed from a primary alias to a separate test author, because the old fixture relied on the weaker rule. The harness manifest hashes were regenerated and record the amendment.
+
+## 17. Post-lock amendment HARNESS_AMENDMENT_002
+
+**Date:** October 15, 2026. **Owner decision:** approved human-reference decontamination (`E3F-ISSUE-HR-001`). **Record:** `ENGINE3_STAGE_F_HARNESS_AMENDMENT_002.md`.
+
+Scope: three strings of `ANNOTATION_GUIDE` in `annotation.py`, the instructional guide carried by every blinded packet. Each contained an example value taken from the evaluation contexts. Only the example was replaced; the rule text around it is unchanged.
+
+| Packet guide path | Example before | Example after |
+|---|---|---|
+| `specificity_convention.90` | `9.00% -> 9%` | `$46.00 -> $46` |
+| `reference_use_convention.formatting_only_numeric_variant` | `9.00% -> 9%` | `$46.00 -> $46` |
+| `reference_use_convention.semantically_equivalent_rewording` | `more than 8% -> above 8%` | `over $40 -> higher than $40` |
+
+No experiment rule changed: field and enum meanings, annotation statuses, the 0/10/90 specificity convention, Stage D behaviour, comparison and decision rules, thresholds A to G, arms and sizes, the Arm A and Arm G corpora, and the O-5 model configuration are unchanged. Packet structure, packet ids, and blinding are unchanged; the new values come from the fictional account used by the frozen O-5 prompt and the frozen human-reference operational guide.
+
+Tests: the spec-equality test now requires the guide to equal the locked spec after only the approved example substitution, and checks that the substitution replaced exactly one example; new tests check the exact new example values against the spec's structured fields, and check every dry-run packet's guide for evaluation values (`9.00%`, `9%`, `above 8%`, `more than 8%`, and the evaluation names) while confirming that blinded case content may still carry them. The harness manifest test checks the amendment record and keeps `HARNESS_AMENDMENT_001` unchanged. Status remains `LOCKED_OFFLINE_HARNESS_NOT_EXECUTED`.

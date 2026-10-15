@@ -44,6 +44,7 @@ PRE_RUN_CURRENT = {"O-3": "PRE_RUN_REQUIRED", "O-5": "PRE_RUN_REQUIRED", "O-6": 
 # Post-lock amendments: id -> (date, record path). Each must be recorded in the manifest with the record's hash.
 AMENDMENTS = {
     "HARNESS_AMENDMENT_001": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_001.md"),
+    "HARNESS_AMENDMENT_002": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_002.md"),
 }
 HARNESS_GLOBS = (
     "experiments/engine3_stage_f/*.py",

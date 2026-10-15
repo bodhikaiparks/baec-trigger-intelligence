@@ -33,6 +33,11 @@ GROUNDING_KEYS = {"grounding_item_id", "exact_value", "disposition", "source_ide
                   "is_buyer_statement", "approximate", "approved_specificity", "adversity_related",
                   "adversity_context_reviewed"}
 COMPARISON_LABELS = ("CONCORDANT_PASS", "CONCORDANT_REFUSAL", "FALSE_PASS", "FALSE_REFUSAL")
+# HARNESS_AMENDMENT_002: the only approved change to the packet guide. Each evaluation-derived example in the locked
+# spec is replaced by a fictional value; the normative rule text around it is unchanged.
+APPROVED_EXAMPLE_SUBSTITUTIONS = {"9.00% -> 9%": "$46.00 -> $46", "more than 8% -> above 8%": "over $40 -> higher than $40"}
+# Evaluation values that must never reach an annotator through instructional text (case content may carry them).
+EVALUATION_VALUES = ("9.00%", "9%", "above 8%", "more than 8%", "alder", "ridge", "cobalt", "july")
 HIDDEN_KEYS = {"arm", "repeat_index", "scenario_id", "family", "run_id", "run_kind", "binding", "context_id",
                "experiment_configuration_id", "experiment_provenance", "model", "model_identifier", "prompt",
                "sampling_configuration", "requested_action", "requests_score", "d_model", "d_ref", "report",
@@ -130,10 +135,19 @@ def test_packet_builder_cannot_receive_run_identity_or_model_results():
     assert list(inspect.signature(finalize_reference).parameters) == ["packet", "primary_a", "primary_b", "adjudication"]
 
 
+def _with_approved_examples(text: str) -> str:
+    for old, new in APPROVED_EXAMPLE_SUBSTITUTIONS.items():
+        assert text.count(old) <= 1, old
+        text = text.replace(old, new)
+    return text
+
+
 def test_guide_conventions_match_the_locked_spec_exactly():
+    # Rule text must equal the locked spec; only the approved example substitution (HARNESS_AMENDMENT_002) may differ.
     spec = ad.load_spec()["measurement_conventions"]
     for key in ("0", "10", "90"):
-        assert ANNOTATION_GUIDE["specificity_convention"][key] == spec["specificity"]["values"][key]
+        assert ANNOTATION_GUIDE["specificity_convention"][key] == _with_approved_examples(spec["specificity"]["values"][key])
+    assert spec["specificity"]["values"]["90"].count("9.00% -> 9%") == 1  # the substitution replaced exactly one example
     assert ANNOTATION_GUIDE["specificity_convention"]["excluded_values"] == spec["specificity"]["excluded_values"]
     for mode in ("INTERNAL", "DIRECT", "PARAPHRASE"):
         assert ANNOTATION_GUIDE["reference_use_convention"][mode] == spec["reference_use_mode"][mode]
@@ -148,6 +162,42 @@ def test_guide_conventions_match_the_locked_spec_exactly():
     assert vocab["claim_type"] == [c.value for c in ClaimType]
     assert vocab["claim_field"] == [c.value for c in ClaimField]
     assert vocab["reference_use_mode"] == [m.value for m in ReferenceUseMode]
+
+
+def test_packet_guide_examples_are_the_approved_decontaminated_values():
+    spec = ad.load_spec()["measurement_conventions"]["reference_use_mode"]
+    variant, rewording = spec["formatting_only_numeric_variant"], spec["semantically_equivalent_rewording"]
+    convention = ANNOTATION_GUIDE["reference_use_convention"]
+    assert convention["formatting_only_numeric_variant"] == (
+        f"may be coded {variant['may_be_coded']} (example {APPROVED_EXAMPLE_SUBSTITUTIONS[variant['example']]}) "
+        f"and is flagged {variant['flag']}")
+    assert convention["semantically_equivalent_rewording"] == (
+        f"coded {rewording['coded']} (example {APPROVED_EXAMPLE_SUBSTITUTIONS[rewording['example']]})")
+    assert ANNOTATION_GUIDE["specificity_convention"]["90"].endswith("formatting-only variants such as $46.00 -> $46")
+    assert convention["formatting_only_numeric_variant"] == "may be coded DIRECT (example $46.00 -> $46) and is flagged formatting_variant"
+    assert convention["semantically_equivalent_rewording"] == "coded PARAPHRASE (example over $40 -> higher than $40)"
+
+
+@pytest.mark.parametrize("item", PACKETS, ids=[_ids(p) for p in PACKETS])
+def test_no_evaluation_value_reaches_a_packet_through_the_instructional_guide(item):
+    # The guide is the only instructional text in a packet; every other key is blinded case content.
+    data = json.loads(item[3].to_json())
+    assert set(data) - {"guide"} == PACKET_KEYS - {"guide"}
+    instructional = json.dumps(data["guide"], ensure_ascii=False).casefold()
+    for value in EVALUATION_VALUES:
+        assert value not in instructional, value
+
+
+def test_evaluation_value_check_separates_the_guide_from_case_content():
+    # Case content may legitimately carry evaluation values (here the grounded 9.00% measurement); the check above
+    # must therefore look only at the instructional guide, and it is not passing merely because no value occurs.
+    case_content = []
+    for _, _, _, packet in PACKETS:
+        data = json.loads(packet.to_json())
+        data.pop("guide")
+        case_content.append(json.dumps(data, ensure_ascii=False))
+    assert any("9.00%" in text for text in case_content)
+    assert any("more than 8%" in text for text in case_content)
 
 
 def test_packets_are_deterministic_and_deduplicate_byte_identical_prose():

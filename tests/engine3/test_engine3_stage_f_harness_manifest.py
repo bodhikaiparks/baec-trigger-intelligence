@@ -62,13 +62,28 @@ def test_manifest_records_no_execution_and_unresolved_limitation():
 
 
 def test_harness_amendment_001_is_recorded_and_hash_bound():
-    assert [a["id"] for a in MANIFEST["harness_amendments"]] == ["HARNESS_AMENDMENT_001"]
+    assert [a["id"] for a in MANIFEST["harness_amendments"]] == ["HARNESS_AMENDMENT_001", "HARNESS_AMENDMENT_002"]
     amendment = MANIFEST["harness_amendments"][0]
     assert amendment["applied"] is True and amendment["date"] == "2026-10-15"
     assert amendment["files_modified"] == ["experiments/engine3_stage_f/readiness.py"]
     assert _sha256(REPO / amendment["record"]) == amendment["record_sha256"]
     assert MANIFEST["status"] == "LOCKED_OFFLINE_HARNESS_NOT_EXECUTED"
     assert "HARNESS_AMENDMENT_001" in REPORT_PATH.read_text(encoding="utf-8")
+
+
+def test_harness_amendment_002_is_recorded_hash_bound_and_limited_to_the_packet_guide_examples():
+    amendment = MANIFEST["harness_amendments"][1]
+    assert amendment["id"] == "HARNESS_AMENDMENT_002"
+    assert amendment["applied"] is True and amendment["date"] == "2026-10-15" and amendment["owner_approved"] is True
+    assert amendment["files_modified"] == ["experiments/engine3_stage_f/annotation.py"]
+    assert amendment["example_substitutions"] == {"9.00% -> 9%": "$46.00 -> $46",
+                                                  "more than 8% -> above 8%": "over $40 -> higher than $40"}
+    assert amendment["experiment_rules_changed"] is False
+    assert _sha256(REPO / amendment["record"]) == amendment["record_sha256"]
+    # HARNESS_AMENDMENT_001 history is kept unchanged.
+    assert MANIFEST["harness_amendments"][0]["record_sha256"] == (
+        "a2350ca991716b545c213b41cc1f8a56710370299a7f6c55f0ba481462977536")
+    assert "HARNESS_AMENDMENT_002" in REPORT_PATH.read_text(encoding="utf-8")
 
 
 def test_o6_lock_time_status_is_preserved_and_current_status_is_bound_to_the_freeze():
