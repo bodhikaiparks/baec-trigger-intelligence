@@ -65,7 +65,7 @@ def test_manifest_records_no_execution_and_unresolved_limitation():
 
 def test_harness_amendment_001_is_recorded_and_hash_bound():
     assert [a["id"] for a in MANIFEST["harness_amendments"]] == [
-        "HARNESS_AMENDMENT_001", "HARNESS_AMENDMENT_002", "HARNESS_AMENDMENT_003"]
+        "HARNESS_AMENDMENT_001", "HARNESS_AMENDMENT_002", "HARNESS_AMENDMENT_003", "HARNESS_AMENDMENT_004"]
     amendment = MANIFEST["harness_amendments"][0]
     assert amendment["applied"] is True and amendment["date"] == "2026-10-15"
     assert amendment["files_modified"] == ["experiments/engine3_stage_f/readiness.py"]
@@ -166,9 +166,9 @@ def test_o5_lock_time_status_is_preserved_as_history():
     assert MANIFEST["o5_status_at_harness_lock"] == "PRE_RUN_REQUIRED"
     assert {i["id"]: i["status"] for i in MANIFEST["pre_run_required"]}["O-5"] == "PRE_RUN_REQUIRED"
     assert MANIFEST["pre_run_required_label"].startswith("Lock-time state (2026-10-14). Historical record")
-    # The superseded current-state snapshot is kept, labelled as superseded, not rewritten.
+    # The superseded current-state snapshots are kept, labelled as superseded, not rewritten.
     superseded = MANIFEST["pre_run_state_current_superseded"]
-    assert [s["superseded_by"] for s in superseded] == ["HARNESS_AMENDMENT_003"]
+    assert [s["superseded_by"] for s in superseded] == ["HARNESS_AMENDMENT_003", "HARNESS_AMENDMENT_004"]
     assert superseded[0]["status"] == {"O-3": "PRE_RUN_REQUIRED", "O-5": "PRE_RUN_REQUIRED", "O-6": "RESOLVED_FROZEN"}
 
 
@@ -230,12 +230,10 @@ def test_current_readiness_does_not_fail_because_of_o5():
 def test_pilot_readiness_stays_false_for_the_actual_remaining_blockers():
     current = MANIFEST["pre_run_state_current"]
     assert current["pilot_readiness"] is False
-    assert current["pilot_readiness_blockers"] == {
-        "O-3": "PRE_RUN_REQUIRED",
-        "CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED": "OPEN",
-    }
+    # HARNESS_AMENDMENT_004 resolved the calibration blocker; O-3 remains.
+    assert current["pilot_readiness_blockers"] == {"O-3": "PRE_RUN_REQUIRED"}
     assert current["annotation_record_provenance_hashes"] == "RESOLVED"
-    assert current["calibration_contamination_audit"] == "OPEN"
+    assert current["calibration_contamination_audit"] == "RESOLVED_FROZEN"
     for key in ("live_model_executed", "pilot_executed", "main_experiment_executed"):
         assert MANIFEST[key] is False
     assert MANIFEST["governing_limitation"]["resolved"] is False
@@ -261,3 +259,65 @@ def test_broadened_o3_exposure_rule_is_recorded_additively_without_identities_or
     assert "**No exception is approved now.**" in text
     assert "Working on the repository is not, by itself, exposure." in text
     assert "| O-3 | `PRE_RUN_REQUIRED`" in text
+
+
+# --- HARNESS_AMENDMENT_004 ------------------------------------------------------------------------
+
+CALIBRATION_FREEZE = "docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_FREEZE_MANIFEST.json"
+CALIBRATION_CORPUS = "docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_CORPUS.json"
+CALIBRATION_GUIDE = "docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_GUIDE.md"
+
+
+def test_harness_amendment_004_is_recorded_hash_bound_and_limited_to_the_calibration_status():
+    amendment = MANIFEST["harness_amendments"][3]
+    assert amendment["id"] == "HARNESS_AMENDMENT_004"
+    assert amendment["applied"] is True and amendment["date"] == "2026-10-15"
+    assert MANIFEST["harness_amendment_004_applied"] is True
+    assert amendment["files_modified"] == []
+    assert amendment["scope"] == ["record CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED RESOLVED_FROZEN"]
+    assert amendment["experiment_rules_changed"] is False
+    assert amendment["record"] == "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_004.md"
+    assert _sha256(REPO / amendment["record"]) == amendment["record_sha256"]
+    assert amendment["o5_rebinding_record"] == "docs/engine3/ENGINE3_STAGE_F_O5_POSTFREEZE_REBINDING_003.json"
+    assert amendment["owner_approved"] == "APPROVED"
+    assert "not an independent human annotation or independent adjudication" in amendment["approval_provenance"]
+    # Earlier amendment history is kept unchanged.
+    assert [a["record_sha256"] for a in MANIFEST["harness_amendments"][:3]] == [
+        "a2350ca991716b545c213b41cc1f8a56710370299a7f6c55f0ba481462977536",
+        "76d20bce96d4ac2a1617e3a71c4cf96b278570e71da648fb1423f17dc76e2d87",
+        "48060bf60e323964a61fe1d012edc562dd0b67e2c934dbef8db1864c12c4991e",
+    ]
+    assert "HARNESS_AMENDMENT_004" in REPORT_PATH.read_text(encoding="utf-8")
+
+
+def test_calibration_current_status_is_bound_to_the_exact_freeze_records():
+    current = MANIFEST["pre_run_state_current"]
+    assert current["updated_by"] == "HARNESS_AMENDMENT_004"
+    calibration = current["calibration"]
+    for key, rel in (("freeze_manifest", CALIBRATION_FREEZE), ("corpus", CALIBRATION_CORPUS),
+                     ("guide", CALIBRATION_GUIDE)):
+        assert calibration[key] == rel
+        assert calibration[f"{key}_sha256"] == _sha256(REPO / rel), key
+    freeze = _load(CALIBRATION_FREEZE)
+    assert freeze["status"] == "CALIBRATION_CORPUS_FROZEN" and freeze["blocker_status"] == "RESOLVED_FROZEN"
+    assert freeze["corpus_sha256"] == calibration["corpus_sha256"]
+    assert freeze["guide_sha256"] == calibration["guide_sha256"]
+    assert freeze["contamination_audit"]["passed"] is True
+    assert freeze["calibration_responses_collected"] is False
+    assert freeze["pre_run_status"] == current["status"]
+    assert freeze["pilot_readiness"] is False
+
+
+def test_the_snapshot_superseded_by_amendment_004_keeps_the_calibration_blocker_open():
+    snapshot = MANIFEST["pre_run_state_current_superseded"][1]
+    assert snapshot["superseded_by"] == "HARNESS_AMENDMENT_004"
+    assert snapshot["status"] == {"O-3": "PRE_RUN_REQUIRED", "O-5": "RESOLVED_FROZEN", "O-6": "RESOLVED_FROZEN"}
+    assert snapshot["calibration_contamination_audit"] == "OPEN"
+    assert snapshot["pilot_readiness_blockers"] == {
+        "O-3": "PRE_RUN_REQUIRED", "CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED": "OPEN"}
+
+
+def test_readiness_still_fails_on_o3_after_the_calibration_freeze():
+    readiness = check_pilot_readiness(None, _frozen_o5_configuration(), _frozen_o6_supplement())
+    assert "O-3" in {item for item, _ in readiness.unresolved}
+    assert not readiness.preconditions_met and readiness.owner_approval_still_required is True

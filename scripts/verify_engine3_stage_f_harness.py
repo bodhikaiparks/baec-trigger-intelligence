@@ -5,7 +5,8 @@ artifacts and the locked Stage A-E artifacts are unchanged, checks the harness m
 hashes and coverage, checks that dry-run inputs and the oracle stay separate, checks the
 no-execution record, that O-3, O-5, and O-6 are recorded as PRE_RUN_REQUIRED at harness lock,
 and the current pre-run state (O-3 unresolved; O-5 and O-6 RESOLVED_FROZEN, each bound to its
-exact freeze records), then runs the harness tests, which include the static audit. Separate
+exact freeze records; the calibration contamination blocker RESOLVED_FROZEN, bound to the exact
+calibration freeze records), then runs the harness tests, which include the static audit. Separate
 from scripts/verify_engine3_stage_f_design.py.
 """
 from __future__ import annotations
@@ -66,12 +67,24 @@ O3_ADDENDA = {
     "eligibility_addendum_002": ("docs/engine3/ENGINE3_STAGE_F_O3_ANNOTATOR_ELIGIBILITY_ADDENDUM_002.md",
                                  "9490a7213625a3e2e13cae1b98b57c47223ac60e56e69ff8f51af4f1ce72f5bd"),
 }
-PILOT_BLOCKERS = {"O-3": "PRE_RUN_REQUIRED", "CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED": "OPEN"}
+PILOT_BLOCKERS = {"O-3": "PRE_RUN_REQUIRED"}
+# Blockers in the snapshot HARNESS_AMENDMENT_004 superseded. Historical.
+PILOT_BLOCKERS_SUPERSEDED = {"O-3": "PRE_RUN_REQUIRED", "CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED": "OPEN"}
+# HARNESS_AMENDMENT_004: the calibration blocker is RESOLVED_FROZEN, bound to these exact records (path -> SHA-256).
+CALIBRATION_BOUND = {
+    "freeze_manifest": ("docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_FREEZE_MANIFEST.json",
+                        "a88600bb392f9d853b07c8948ee41ce8af597f5a3025697c56dc5e6e0fefef97"),
+    "corpus": ("docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_CORPUS.json",
+               "83e5843d10a575792379fc4f1e6b3f0570ff8f951d272889478380b03a317c46"),
+    "guide": ("docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_GUIDE.md",
+              "5a1d83cbc0082b0a29c2f042854135efb6a8e0d0d2e8877f2d1a5d9a8a591584"),
+}
 # Post-lock amendments: id -> (date, record path). Each must be recorded in the manifest with the record's hash.
 AMENDMENTS = {
     "HARNESS_AMENDMENT_001": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_001.md"),
     "HARNESS_AMENDMENT_002": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_002.md"),
     "HARNESS_AMENDMENT_003": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_003.md"),
+    "HARNESS_AMENDMENT_004": ("2026-10-15", "docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_004.md"),
 }
 HARNESS_GLOBS = (
     "experiments/engine3_stage_f/*.py",
@@ -148,8 +161,11 @@ def _check_manifest(harness: dict, failures: list[str]) -> None:
             or harness.get("o5_status_at_harness_lock") != "PRE_RUN_REQUIRED"):
         failures.append("harness manifest: lock-time O-3, O-5, O-6 must remain recorded as PRE_RUN_REQUIRED")
     superseded = harness.get("pre_run_state_current_superseded", [])
-    if [(x.get("superseded_by"), x.get("status")) for x in superseded] != [("HARNESS_AMENDMENT_003", PRE_RUN_SUPERSEDED)]:
-        failures.append("harness manifest: the superseded current-state snapshot must be kept as history")
+    if ([(x.get("superseded_by"), x.get("status")) for x in superseded]
+            != [("HARNESS_AMENDMENT_003", PRE_RUN_SUPERSEDED), ("HARNESS_AMENDMENT_004", PRE_RUN_CURRENT)]
+            or superseded[1].get("calibration_contamination_audit") != "OPEN"
+            or superseded[1].get("pilot_readiness_blockers") != PILOT_BLOCKERS_SUPERSEDED):
+        failures.append("harness manifest: the superseded current-state snapshots must be kept as history")
     _check_current_pre_run(harness, failures)
     if harness.get("pre_run_records_supplied") is not False:
         failures.append("harness manifest: no pre-run record may be recorded as supplied")
@@ -178,8 +194,10 @@ def _check_current_pre_run(harness: dict, failures: list[str]) -> None:
         failures.append(f"harness manifest: current pre-run state must be {PRE_RUN_CURRENT}")
     if (current.get("pilot_readiness") is not False or current.get("pilot_readiness_blockers") != PILOT_BLOCKERS
             or current.get("annotation_record_provenance_hashes") != "RESOLVED"
-            or current.get("calibration_contamination_audit") != "OPEN"):
+            or current.get("calibration_contamination_audit") != "RESOLVED_FROZEN"
+            or current.get("updated_by") != "HARNESS_AMENDMENT_004"):
         failures.append(f"harness manifest: pilot readiness must be false with blockers {PILOT_BLOCKERS}")
+    _check_current_calibration(current.get("calibration", {}), failures)
     _check_current_o5(current.get("o5", {}), failures)
     _check_current_o3(current.get("o3", {}), failures)
     if current.get("o6_freeze_manifest") != O6_FREEZE_MANIFEST:
@@ -193,6 +211,28 @@ def _check_current_pre_run(harness: dict, failures: list[str]) -> None:
     if current.get("o6_frozen_file") != freeze.get("frozen_file"):
         failures.append("harness manifest: O-6 frozen file does not match the freeze manifest")
     _check_hashes({freeze.get("frozen_file", ""): freeze.get("frozen_file_sha256")}, "O-6 frozen corpus", failures)
+
+
+def _check_current_calibration(calibration: dict, failures: list[str]) -> None:
+    """HARNESS_AMENDMENT_004: calibration blocker RESOLVED_FROZEN, bound to the exact calibration freeze records."""
+    for key, (rel, digest) in CALIBRATION_BOUND.items():
+        if calibration.get(key) != rel or calibration.get(f"{key}_sha256") != digest:
+            failures.append(f"harness manifest: calibration {key} must be {rel} at {digest}")
+        _check_hashes({rel: digest}, f"calibration {key}", failures)
+    freeze_rel = CALIBRATION_BOUND["freeze_manifest"][0]
+    if not (REPO / freeze_rel).exists():
+        return
+    freeze = _load(REPO / freeze_rel)
+    if (freeze.get("status") != "CALIBRATION_CORPUS_FROZEN"
+            or freeze.get("blocker") != "CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED"
+            or freeze.get("blocker_status") != "RESOLVED_FROZEN"
+            or freeze.get("corpus_sha256") != CALIBRATION_BOUND["corpus"][1]
+            or freeze.get("guide_sha256") != CALIBRATION_BOUND["guide"][1]
+            or freeze.get("pre_run_status") != PRE_RUN_CURRENT or freeze.get("pilot_readiness") is not False
+            or freeze.get("calibration_responses_collected") is not False
+            or freeze.get("contamination_audit", {}).get("passed") is not True):
+        failures.append("calibration freeze manifest does not show a passed audit, RESOLVED_FROZEN, O-3 unresolved, "
+                        "pilot readiness false, and no responses collected")
 
 
 def _check_current_o5(o5: dict, failures: list[str]) -> None:
@@ -276,7 +316,9 @@ def main() -> int:
     print(f"PASS  Pre-run items at harness lock were PRE_RUN_REQUIRED: {', '.join(PRE_RUN_REQUIRED)}")
     print("PASS  Current pre-run state: " + ", ".join(f"{k}={v}" for k, v in PRE_RUN_CURRENT.items())
           + "; O-6 freeze manifest hash and frozen corpus match; O-5 freeze manifest, frozen configuration, and "
-          + "O5_POSTFREEZE_REBINDING_001 hashes match; O5_POSTFREEZE_REBINDING_002 referenced")
+          + "O5_POSTFREEZE_REBINDING_001 hashes match; O5_POSTFREEZE_REBINDING_002 referenced; calibration "
+          + "freeze manifest, corpus, and guide hashes match (CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED "
+          + "RESOLVED_FROZEN)")
     print("PASS  Pilot readiness false; blockers: " + ", ".join(f"{k}={v}" for k, v in PILOT_BLOCKERS.items())
           + "; annotation record provenance hashes RESOLVED; O-3 addenda hash-bound, no exception, no identity")
     print(f"PASS  Post-lock amendments recorded with record hashes: {', '.join(AMENDMENTS)}")

@@ -6,8 +6,9 @@ Checks, without any model call, credential read, or network access:
 2. prompt, schema, and configuration hashes recomputed from the frozen record;
 3. the freeze manifest's bindings, including every locked input recorded at freeze. The original hashes are
    always verified and reported; the only accepted divergences are the exact, owner-approved rebindings, in
-   order: O5_POSTFREEZE_REBINDING_001 (HARNESS_AMENDMENT_002) and O5_POSTFREEZE_REBINDING_002
-   (HARNESS_AMENDMENT_003), whose permitted files and expected hashes are fixed below;
+   order: O5_POSTFREEZE_REBINDING_001 (HARNESS_AMENDMENT_002), O5_POSTFREEZE_REBINDING_002
+   (HARNESS_AMENDMENT_003), and O5_POSTFREEZE_REBINDING_003 (HARNESS_AMENDMENT_004), whose permitted files
+   and expected hashes are fixed below;
 4. the review document's prompt copies are byte-identical to the frozen record;
 5. the thinking instruction is present exactly once, immediately before the JSON instruction, and the
    schema has no reasoning field;
@@ -52,6 +53,7 @@ ISSUE = DOCS / "ENGINE3_STAGE_F_HUMAN_REFERENCE_CONTAMINATION_ISSUE.md"
 RESOLUTION = DOCS / "ENGINE3_STAGE_F_HUMAN_REFERENCE_CONTAMINATION_RESOLUTION_001.md"
 REBINDING = DOCS / "ENGINE3_STAGE_F_O5_POSTFREEZE_REBINDING_001.json"
 REBINDING_002 = DOCS / "ENGINE3_STAGE_F_O5_POSTFREEZE_REBINDING_002.json"
+REBINDING_003 = DOCS / "ENGINE3_STAGE_F_O5_POSTFREEZE_REBINDING_003.json"
 PROTOCOL = DOCS / "ENGINE3_STAGE_F_HUMAN_REFERENCE_ANNOTATION_PROTOCOL.md"
 SPEC = DOCS / "ENGINE3_STAGE_F_EXPERIMENT_SPEC.json"
 O6_FROZEN = DOCS / "ENGINE3_STAGE_F_ARM_A_ADDITIONAL_ARTIFACTS_FROZEN.json"
@@ -134,6 +136,31 @@ REBINDING_002_RECORDS = {
     "o3_eligibility_addendum_002": ("docs/engine3/ENGINE3_STAGE_F_O3_ANNOTATOR_ELIGIBILITY_ADDENDUM_002.md",
                                     "9490a7213625a3e2e13cae1b98b57c47223ac60e56e69ff8f51af4f1ce72f5bd"),
     "operational_guide_freeze_manifest": REBINDING_RECORDS["operational_guide_freeze_manifest"],
+}
+# O5_POSTFREEZE_REBINDING_002 is final: O5_POSTFREEZE_REBINDING_003 binds its exact bytes and the verifier hash it
+# recorded.
+REBINDING_002_PATH = "docs/engine3/ENGINE3_STAGE_F_O5_POSTFREEZE_REBINDING_002.json"
+REBINDING_002_SHA256 = "c8d5e8e8db0f007d9e96336557801c5f859a2f13b89d42bfa408839b82957910"
+REBINDING_002_VERIFIER = ("86c744658835edf4297b7c2368b955a113fc9bb3ad9fb3dfaebc32a26732b3fd",
+                          "bd8f8add185dd1bb6ba299541d26866c3ed7e444ecce53c42b4a4711b2184472")
+
+REBINDING_003_ID = "O5_POSTFREEZE_REBINDING_003"
+REBINDING_003_AMENDMENT = "HARNESS_AMENDMENT_004"
+# The only locked inputs REBINDING_003 may change: path -> (hash before HARNESS_AMENDMENT_004, hash after it).
+REBOUND_LOCKED_INPUTS_003 = {
+    "tests/engine3/test_engine3_stage_f_harness_manifest.py": (
+        "b87ac85f55866ac17702e6bd0ec18e6483551c73b81507da2f28acbbfcc63872", "a7b6360ae22be7c5535dc5c807ee339fce5b737d4ff5fbf6ed8d2b2ff10d1e45"),
+    "scripts/verify_engine3_stage_f_harness.py": (
+        "2c0123fb46cbf71cc5295d6720c24dc84d5de4cf02b8082bd3e69f59a36c084d", "df028084a69e26448adbc804f3483e073120af047a9f5cdc5988b820d036c055"),
+    "docs/engine3/ENGINE3_STAGE_F_HARNESS_IMPLEMENTATION_REPORT.md": (
+        "270c82fb9a523c598e6b0d9c5394aba8f2f3e221d674787fc6818e2d80e15441", "fca5fc37d693be55e06e9a524e5173b1fb122ecd65675421df14bcc5efe3dedf"),
+    "docs/engine3/ENGINE3_STAGE_F_HARNESS_MANIFEST.json": (
+        "245f2cabd2ad22e847e937cc089c0ecb2f19086aa1e1b6788cfaec3e232868d1", "2b46815abbad41b08d0f5e0fb597234aa87456167bc12b0f9a7c1f6ae18aa098"),
+}
+REBINDING_003_RECORDS = {
+    "harness_amendment_004": ("docs/engine3/ENGINE3_STAGE_F_HARNESS_AMENDMENT_004.md", "26db52bee5e9d552458d61d3e1b6cdce059cefc838cd1c47413bc37ff7a3d941"),
+    "calibration_freeze_manifest": ("docs/engine3/ENGINE3_STAGE_F_HUMAN_CALIBRATION_FREEZE_MANIFEST.json",
+                                    "a88600bb392f9d853b07c8948ee41ce8af597f5a3025697c56dc5e6e0fefef97"),
 }
 
 # --- run order (frozen algorithm) -----------------------------------------------------------------
@@ -432,7 +459,7 @@ def _rebinding_001_findings(m: dict, f: dict, verifier_path: str) -> list[str]:
     return problems
 
 
-def _rebinding_002_findings(m: dict, f: dict, verifier_path: str, verifier_sha: str) -> list[str]:
+def _rebinding_002_findings(m: dict, f: dict, verifier_path: str) -> list[str]:
     problems: list[str] = []
     rb = _load(REBINDING_002) if REBINDING_002.exists() else {}
     if rb.get("rebinding_id") != REBINDING_002_ID or rb.get("amendment") != REBINDING_002_AMENDMENT:
@@ -446,8 +473,8 @@ def _rebinding_002_findings(m: dict, f: dict, verifier_path: str, verifier_sha: 
     if rb.get("previous_rebinding") != {"path": REBINDING_PATH, "sha256": REBINDING_SHA256}:
         problems.append(f"{REBINDING_002_ID} does not bind {REBINDING_ID} by its exact hash")
     if rb.get("o5_verifier") != {"path": verifier_path, "previous_sha256": REBINDING_VERIFIER[1],
-                                 "post_sha256": verifier_sha}:
-        problems.append("O-5 verifier hash is neither the original nor the rebound hash")
+                                 "post_sha256": REBINDING_002_VERIFIER[1]}:
+        problems.append(f"{REBINDING_002_ID} verifier hashes differ from the approved pair")
     expected_inputs = {rel: {"freeze_sha256": m["locked_inputs_sha256"].get(rel), "previous_sha256": o, "post_sha256": n}
                        for rel, (o, n) in REBOUND_LOCKED_INPUTS_002.items()}
     if rb.get("rebound_locked_inputs") != expected_inputs:
@@ -457,6 +484,36 @@ def _rebinding_002_findings(m: dict, f: dict, verifier_path: str, verifier_sha: 
         problems.append(f"{REBINDING_002_ID} bound records differ from the approved set")
     if rb.get("unchanged_o5_configuration") != unchanged_configuration(f):
         problems.append(f"{REBINDING_002_ID}'s unchanged O-5 configuration does not match the original frozen record")
+    if REBINDING_002.exists() and file_sha(REBINDING_002) != REBINDING_002_SHA256:
+        problems.append(f"{REBINDING_002_ID} record changed after {REBINDING_003_ID} bound it")
+    return problems
+
+
+def _rebinding_003_findings(m: dict, f: dict, verifier_path: str, verifier_sha: str) -> list[str]:
+    problems: list[str] = []
+    rb = _load(REBINDING_003) if REBINDING_003.exists() else {}
+    if rb.get("rebinding_id") != REBINDING_003_ID or rb.get("amendment") != REBINDING_003_AMENDMENT:
+        problems.append(f"rebinding record must be exactly {REBINDING_003_ID} for {REBINDING_003_AMENDMENT}")
+    if (rb.get("original_o5_records_modified") is not False or rb.get("previous_rebindings_modified") is not False
+            or rb.get("o5_status") != "RESOLVED_FROZEN"):
+        problems.append(f"{REBINDING_003_ID} must record the original O-5 records and earlier rebindings unmodified "
+                        "and O-5 RESOLVED_FROZEN")
+    if any(rb.get(k) != v for k, v in _original_records().items()):
+        problems.append(f"{REBINDING_003_ID} does not bind the original O-5 records")
+    if rb.get("previous_rebinding") != {"path": REBINDING_002_PATH, "sha256": REBINDING_002_SHA256}:
+        problems.append(f"{REBINDING_003_ID} does not bind {REBINDING_002_ID} by its exact hash")
+    if rb.get("o5_verifier") != {"path": verifier_path, "previous_sha256": REBINDING_002_VERIFIER[1],
+                                 "post_sha256": verifier_sha}:
+        problems.append("O-5 verifier hash is neither the original nor the rebound hash")
+    expected_inputs = {rel: {"freeze_sha256": m["locked_inputs_sha256"].get(rel), "previous_sha256": o, "post_sha256": n}
+                       for rel, (o, n) in REBOUND_LOCKED_INPUTS_003.items()}
+    if rb.get("rebound_locked_inputs") != expected_inputs:
+        problems.append(f"{REBINDING_003_ID} locked-input list or hashes differ from the approved set")
+    expected_records = {k: {"path": rel, "sha256": d} for k, (rel, d) in REBINDING_003_RECORDS.items()}
+    if rb.get("bound_records") != expected_records:
+        problems.append(f"{REBINDING_003_ID} bound records differ from the approved set")
+    if rb.get("unchanged_o5_configuration") != unchanged_configuration(f):
+        problems.append(f"{REBINDING_003_ID}'s unchanged O-5 configuration does not match the original frozen record")
     return problems
 
 
@@ -471,17 +528,19 @@ def rebinding_findings(m: dict, f: dict, verifier_sha: str) -> tuple[list[str], 
         problems.append("original freeze manifest no longer binds the original frozen record")
     verifier_path = Path(__file__).resolve().relative_to(REPO).as_posix()
     problems += _rebinding_001_findings(m, f, verifier_path)
-    problems += _rebinding_002_findings(m, f, verifier_path, verifier_sha)
-    bound = dict(list(REBINDING_RECORDS.values()) + list(REBINDING_002_RECORDS.values()))
+    problems += _rebinding_002_findings(m, f, verifier_path)
+    problems += _rebinding_003_findings(m, f, verifier_path, verifier_sha)
+    bound = dict(list(REBINDING_RECORDS.values()) + list(REBINDING_002_RECORDS.values())
+                 + list(REBINDING_003_RECORDS.values()))
     problems += [f"bound record hash mismatch: {rel}" for rel, d in bound.items()
                  if not (REPO / rel).exists() or file_sha(REPO / rel) != d]
 
     counts = {"unchanged": 0, "rebound": 0}
     for rel, original in m["locked_inputs_sha256"].items():
-        # The approved chain for this file: freeze -> REBINDING_001 -> REBINDING_002. Each step must start
-        # from the hash the previous step ended on.
+        # The approved chain for this file: freeze -> REBINDING_001 -> REBINDING_002 -> REBINDING_003. Each step
+        # must start from the hash the previous step ended on.
         expected, rebound = original, False
-        for chain in (REBOUND_LOCKED_INPUTS, REBOUND_LOCKED_INPUTS_002):
+        for chain in (REBOUND_LOCKED_INPUTS, REBOUND_LOCKED_INPUTS_002, REBOUND_LOCKED_INPUTS_003):
             if rel in chain:
                 before, after = chain[rel]
                 if before != expected:
@@ -496,7 +555,8 @@ def rebinding_findings(m: dict, f: dict, verifier_sha: str) -> tuple[list[str], 
             counts["rebound"] += 1
         else:
             counts["unchanged"] += 1
-    if (set(REBOUND_LOCKED_INPUTS) | set(REBOUND_LOCKED_INPUTS_002)) - set(m["locked_inputs_sha256"]):
+    if (set(REBOUND_LOCKED_INPUTS) | set(REBOUND_LOCKED_INPUTS_002) | set(REBOUND_LOCKED_INPUTS_003)) - set(
+            m["locked_inputs_sha256"]):
         problems.append("rebinding names a file that was not a locked input")
     return problems, counts
 
@@ -563,13 +623,16 @@ def main() -> int:
     report(len(failures) == n,
            f"original freeze manifest {ORIGINAL_MANIFEST_SHA256[:12]} and frozen record {ORIGINAL_FROZEN_SHA256[:12]} "
            f"byte-identical; bindings ({len(bindings) + 1}); locked inputs {counts['unchanged']} unchanged + "
-           f"{counts['rebound']} rebound under {REBINDING_ID} ({REBINDING_AMENDMENT}) and {REBINDING_002_ID} "
-           f"({REBINDING_002_AMENDMENT}) of {len(m['locked_inputs_sha256'])}; verifier original "
-           f"{m['verifier_sha256'][:12]} -> {REBINDING_VERIFIER[1][:12]} -> {verifier_sha[:12]}")
+           f"{counts['rebound']} rebound under {REBINDING_ID} ({REBINDING_AMENDMENT}), {REBINDING_002_ID} "
+           f"({REBINDING_002_AMENDMENT}), and {REBINDING_003_ID} ({REBINDING_003_AMENDMENT}) of "
+           f"{len(m['locked_inputs_sha256'])}; verifier original {m['verifier_sha256'][:12]} -> "
+           f"{REBINDING_VERIFIER[1][:12]} -> {REBINDING_002_VERIFIER[1][:12]} -> {verifier_sha[:12]}")
     for rel, (old, new) in REBOUND_LOCKED_INPUTS.items():
         print(f"      {REBINDING_ID} {rel}: freeze {old[:12]} -> {new[:12]}")
     for rel, (old, new) in REBOUND_LOCKED_INPUTS_002.items():
         print(f"      {REBINDING_002_ID} {rel}: {old[:12]} -> {new[:12]}")
+    for rel, (old, new) in REBOUND_LOCKED_INPUTS_003.items():
+        print(f"      {REBINDING_003_ID} {rel}: {old[:12]} -> {new[:12]}")
     for x in problems:
         print(f"      {x}")
 

@@ -3,7 +3,7 @@
 **Project:** BAEC Trigger Intelligence\
 **Engine:** BAEC Engine 3: Re-engagement Preparation\
 **Stage:** F (experimental harness, offline)\
-**Status:** LOCKED_OFFLINE_HARNESS_NOT_EXECUTED (lock date 2026-10-14). Owner approved the architecture; the zero-denominator reporting correction (section 9) was applied before the lock. No live model has been called. No pilot or main experiment has been run. No experiment result exists. Post-lock amendment `HARNESS_AMENDMENT_001` (October 15, 2026, owner-approved) changed the readiness author-independence check only (section 16). Post-lock amendment `HARNESS_AMENDMENT_002` (October 15, 2026, owner-approved) replaced two evaluation-derived example values in the packet guide only (section 17). Post-lock amendment `HARNESS_AMENDMENT_003` (October 15, 2026, owner-approved) added three provenance hashes to human annotation records, separated historical from current O-5 status, and recorded a broader annotator-exposure rule (section 18).\
+**Status:** LOCKED_OFFLINE_HARNESS_NOT_EXECUTED (lock date 2026-10-14). Owner approved the architecture; the zero-denominator reporting correction (section 9) was applied before the lock. No live model has been called. No pilot or main experiment has been run. No experiment result exists. Post-lock amendment `HARNESS_AMENDMENT_001` (October 15, 2026, owner-approved) changed the readiness author-independence check only (section 16). Post-lock amendment `HARNESS_AMENDMENT_002` (October 15, 2026, owner-approved) replaced two evaluation-derived example values in the packet guide only (section 17). Post-lock amendment `HARNESS_AMENDMENT_003` (October 15, 2026, owner-approved) added three provenance hashes to human annotation records, separated historical from current O-5 status, and recorded a broader annotator-exposure rule (section 18). Post-lock amendment `HARNESS_AMENDMENT_004` (October 15, 2026, owner-approved) recorded the calibration contamination blocker as `RESOLVED_FROZEN` and changed no harness code (section 19).\
 **Date:** October 14, 2026 (amended October 15, 2026)\
 **Base commit:** `c81d00343d96683514dd38f43d11a6ebae6d104e` (Stage F design, `LOCKED_DESIGN_NO_LIVE_EXECUTION`)\
 **Manifest:** `ENGINE3_STAGE_F_HARNESS_MANIFEST.json`; verifier: `scripts/verify_engine3_stage_f_harness.py`
@@ -29,7 +29,7 @@ Every rule in the harness is an IMPLEMENTATION rule (`docs/RESEARCH_CONTRACT.md`
 | E3-E-SEM-001 `MODEL_SEMANTIC_ANNOTATION_NOT_AUTHORITATIVE` | **not resolved** |
 | O-3, O-5, O-6 at harness lock (2026-10-14) | **PRE_RUN_REQUIRED** (no value supplied) |
 | Current pre-run state | O-3 `PRE_RUN_REQUIRED`; O-5 `RESOLVED_FROZEN` by the O-5 freeze (`ENGINE3_STAGE_F_O5_FREEZE_MANIFEST.json`, hash-bound in the harness manifest since `HARNESS_AMENDMENT_003`); O-6 `RESOLVED_FROZEN` by the later Arm A freeze (`ENGINE3_STAGE_F_ARM_A_FREEZE_MANIFEST.json`, hash-bound in the harness manifest) |
-| Pilot readiness | false (O-3 `PRE_RUN_REQUIRED`; `CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED` `OPEN`) |
+| Pilot readiness | false (O-3 `PRE_RUN_REQUIRED`). `CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED` is `RESOLVED_FROZEN` since `HARNESS_AMENDMENT_004` (was `OPEN`). |
 
 Implementing the harness does not show that any model annotates reliably. It only makes the locked experiment executable later, after separate approval.
 
@@ -161,7 +161,7 @@ With no inputs, all three are unresolved. The repository supplies no readiness r
 
 `tests/engine3/test_engine3_stage_f_static_audit.py` is an AST audit of every harness module and of the harness verifier. It does not rely on the legacy Stage D regex test. Categories: model SDK import, network import, process or dynamic import, credential access, model or network call surface, outbound action definitions (and any `ActionAttempt` member other than `NONE`), Engine 1/2 coupling and write calls, test-fixture imports, fixture and oracle tokens, dynamic code, file I/O, and unlisted imports. It includes planted-violation self-tests for every category. The verifier may start only `sys.executable -m pytest`, without a shell.
 
-`scripts/verify_engine3_stage_f_harness.py` is separate from the design verifier, which is unchanged. It checks the Stage F design artifacts and design verifier, the Stage A to E locked hashes, the harness manifest hashes and coverage, input and oracle separation, the no-execution record, that O-3, O-5, and O-6 were `PRE_RUN_REQUIRED` at harness lock, the current pre-run state (O-3 `PRE_RUN_REQUIRED`; O-5 `RESOLVED_FROZEN` bound to the exact O-5 freeze manifest, frozen configuration, and `O5_POSTFREEZE_REBINDING_001`, with `O5_POSTFREEZE_REBINDING_002` referenced; O-6 `RESOLVED_FROZEN` bound to the unchanged O-6 freeze manifest and frozen corpus), pilot readiness false with its exact blockers, the O-3 eligibility addenda hashes, the recorded amendments, and then runs the harness tests.
+`scripts/verify_engine3_stage_f_harness.py` is separate from the design verifier, which is unchanged. It checks the Stage F design artifacts and design verifier, the Stage A to E locked hashes, the harness manifest hashes and coverage, input and oracle separation, the no-execution record, that O-3, O-5, and O-6 were `PRE_RUN_REQUIRED` at harness lock, the current pre-run state (O-3 `PRE_RUN_REQUIRED`; O-5 `RESOLVED_FROZEN` bound to the exact O-5 freeze manifest, frozen configuration, and `O5_POSTFREEZE_REBINDING_001`, with `O5_POSTFREEZE_REBINDING_002` referenced; O-6 `RESOLVED_FROZEN` bound to the unchanged O-6 freeze manifest and frozen corpus), the calibration blocker `RESOLVED_FROZEN` bound to the exact calibration freeze manifest, corpus, and guide (since `HARNESS_AMENDMENT_004`), pilot readiness false with its exact blockers, the O-3 eligibility addenda hashes, the recorded amendments, and then runs the harness tests.
 
 ## 12. Implementation choices
 
@@ -191,15 +191,15 @@ These are implementation choices, not research findings. None changes a locked t
 - Storage for `raw_runs`, `annotation_packets`, `human_reference`, and `comparisons`. Locations remain undecided; records exist in memory only.
 - Annotation tooling and the adjudicator's view.
 - Aggregate reporting of design outputs 1 to 23 (confusion matrices, transition tables, per-scenario variability). The harness provides the per-artifact and per-rule building blocks.
-- Calibration sets and the Arm A supplement (O-6).
+- Calibration sets and the Arm A supplement (O-6). Both were later frozen as documents outside the harness (the O-6 freeze; the calibration freeze, section 19). No harness code reads either.
 
 ## 14. Test results
 
 | Suite | Result |
 |---|---|
-| Stage F harness tests (`tests/engine3/test_engine3_stage_f_*.py`) | 351 passed (253 at lock; 32 added by `HARNESS_AMENDMENT_001`; 15 added by `HARNESS_AMENDMENT_002`; 51 added by `HARNESS_AMENDMENT_003`) |
-| `tests/engine3` | 621 passed (487 at lock; 519 after `HARNESS_AMENDMENT_001`; 558 after `HARNESS_AMENDMENT_002`) |
-| Full repository (`pytest -q`) | 7418 passed, 2 deselected, 0 failed (7284 at lock; 7316 after `HARNESS_AMENDMENT_001`; 7355 after `HARNESS_AMENDMENT_002`) |
+| Stage F harness tests (`tests/engine3/test_engine3_stage_f_*.py`) | 355 passed (253 at lock; 32 added by `HARNESS_AMENDMENT_001`; 15 added by `HARNESS_AMENDMENT_002`; 51 added by `HARNESS_AMENDMENT_003`; 4 added by `HARNESS_AMENDMENT_004`) |
+| `tests/engine3` | 668 passed (487 at lock; 519 after `HARNESS_AMENDMENT_001`; 558 after `HARNESS_AMENDMENT_002`; 621 after `HARNESS_AMENDMENT_003`) |
+| Full repository (`pytest -q`) | 7465 passed, 2 deselected, 0 failed (7284 at lock; 7316 after `HARNESS_AMENDMENT_001`; 7355 after `HARNESS_AMENDMENT_002`; 7418 after `HARNESS_AMENDMENT_003`) |
 | Locked Engine 1/2 public tests | 183 passed |
 
 These are software tests over synthetic inputs. They are not experiment results.
@@ -262,3 +262,19 @@ Scope: annotation-record provenance completeness, historical/current O-5 status 
 | O-3 exposure rule | Exposure meant having seen the historical protocol's section 7 examples. | Exposure means having seen labelled evaluation-derived examples from any project artifact (`ENGINE3_STAGE_F_O3_ANNOTATOR_ELIGIBILITY_ADDENDUM_002.md`). No exception approved; no identity supplied. |
 
 No experiment rule changed. The packet guide, packet structure, packet ids, blinding, comparison, decision rules, thresholds A to G, arms, corpora, Stage D behaviour, and the O-5 model configuration, prompt, schema, retry policy, and run order are unchanged. `readiness.py` is unchanged: the frozen O-5 configuration already satisfies its O-5 check, and pilot readiness stays false because O-3 is unresolved and `CALIBRATION_CORPUS_CONTAMINATION_AUDIT_REQUIRED` is open. No calibration corpus was built. Status remains `LOCKED_OFFLINE_HARNESS_NOT_EXECUTED`.
+
+## 19. Post-lock amendment HARNESS_AMENDMENT_004
+
+**Date:** October 15, 2026. **Owner decision:** approved (freeze an offline human-annotator calibration corpus and, only if its contamination audit passes, record the calibration blocker resolved). The calibration key was model-drafted and subsequently reviewed and approved by the human project owner with model-assisted review. This approval is not an independent human annotation or independent adjudication. **Record:** `ENGINE3_STAGE_F_HARNESS_AMENDMENT_004.md`.
+
+Scope: the current pre-run state in the harness manifest, and the verifier and test checks of it. No harness code changed.
+
+| | Before | After |
+|---|---|---|
+| `calibration_contamination_audit` | `OPEN` (no calibration corpus existed) | `RESOLVED_FROZEN`, bound by SHA-256 to `ENGINE3_STAGE_F_HUMAN_CALIBRATION_FREEZE_MANIFEST.json`, the calibration corpus, and the calibration guide |
+| Pilot readiness blockers | O-3 `PRE_RUN_REQUIRED`; calibration `OPEN` | O-3 `PRE_RUN_REQUIRED` |
+| Superseded snapshot | one (`HARNESS_AMENDMENT_003`) | two; the snapshot written by `HARNESS_AMENDMENT_003` is kept with the calibration blocker `OPEN` |
+
+The calibration corpus, guide, freeze manifest, and audit (`scripts/verify_engine3_stage_f_calibration.py`) are outside the harness. The audit compares every calibration sentence against the 48 Arm A artifacts, Arm G scenario and evaluation material, Stage E prerecorded prose, the dry-run inputs and oracle, the operational guide's worked examples, and the O-5 prompt's worked examples, and found no exact, near, distinctive 4-gram, or banned-term match. No calibration response was collected.
+
+No experiment rule changed. The packet guide, packet structure, blinding, comparison, decision rules, thresholds A to G, arms, corpora, `readiness.py`, Stage D behaviour, the historical protocol, the operational guide, and the O-5 model configuration are unchanged. Pilot readiness stays false because O-3 is unresolved. Status remains `LOCKED_OFFLINE_HARNESS_NOT_EXECUTED`.
