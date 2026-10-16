@@ -1,15 +1,13 @@
-# BAEC public deployment configuration.
+# Shared configuration for the BAEC public research demos. No secrets belong in this repository.
+# .streamlit/secrets.toml is git-ignored.
 
 [browser]
 gatherUsageStats = false
 
-[client]
-toolbarMode = "minimal"
-
 [theme]
 base = "light"
-primaryColor = "#1B2A41"
-backgroundColor = "#FAFAF8"
-secondaryBackgroundColor = "#F2F2EE"
-textColor = "#111418"
-borderColor = "#E4E4E0"
+primaryColor = "#2563EB"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F7FA"
+textColor = "#1F2937"
+borderColor = "#E5E7EB"
