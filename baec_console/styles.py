@@ -58,6 +58,59 @@ header[data-testid="stHeader"] { background: transparent; }
 .bc-kv { display: grid; grid-template-columns: 170px 1fr; gap: 6px 14px; font-size: 14.5px; margin-top: 6px; }
 .bc-kv div:nth-child(odd) { color: var(--muted); }
 
+/* Research overview */
+.bc-system-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0 0 18px 0;
+}
+.bc-system-card {
+  margin-bottom: 0;
+  height: 100%;
+  min-height: 255px;
+}
+.bc-system-card-engine {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--navy);
+  margin-bottom: 8px;
+}
+.bc-system-card-title {
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--ink);
+  min-height: 48px;
+  margin-bottom: 10px;
+}
+.bc-system-card-body {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.bc-metrics-four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.bc-release-copy {
+  min-height: 154px;
+}
+.bc-release-title {
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 650;
+  color: var(--ink);
+  min-height: 46px;
+  margin-bottom: 10px;
+}
+.bc-release-desc {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
 /* Account header */
 .bc-head { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 0; background: var(--surface);
   border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 16px; }
@@ -144,6 +197,10 @@ header[data-testid="stHeader"] { background: transparent; }
 
 @media (max-width: 860px) {
   .bc-metrics { grid-template-columns: repeat(2, 1fr); }
+  .bc-metrics-four { grid-template-columns: repeat(2, 1fr); }
+  .bc-system-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bc-system-card { min-height: 0; }
+  .bc-release-copy { min-height: 0; }
   .bc-head { grid-template-columns: 1fr; }
   .bc-head > div + div { border-left: 0; border-top: 1px solid var(--line); }
   .bc-kv { grid-template-columns: 1fr; }

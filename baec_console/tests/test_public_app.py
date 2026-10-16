@@ -20,7 +20,12 @@ def test_public_console_exposes_full_navigation_and_workspace():
 
     assert not at.exception
 
+    assert _button(at, "Research Overview").disabled is False
     assert _button(at, "Accounts").disabled is False
+    assert "When the Buyer Is Not In-Market" in " ".join(m.value for m in at.markdown)
+
+    _button(at, "Open full system walkthrough").click().run()
+    assert not at.exception
 
     assert at.segmented_control[0].options == [
         "Remember",
@@ -39,6 +44,8 @@ def test_remember_forms_are_visible_but_writes_are_locked():
     at.run()
 
     assert not at.exception
+    _button(at, "Guided walkthrough").click().run()
+    assert not at.exception
 
     add_interaction = _button(at, "+ Add buyer interaction")
     assert not add_interaction.disabled
@@ -56,6 +63,9 @@ def test_remember_forms_are_visible_but_writes_are_locked():
 def test_monitor_write_is_visible_but_locked():
     at = AppTest.from_file(APP, default_timeout=30)
     at.run()
+
+    _button(at, "Guided walkthrough").click().run()
+    assert not at.exception
 
     at.segmented_control[0].set_value("Monitor").run()
     assert not at.exception

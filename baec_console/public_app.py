@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from baec_console import ui_pages, ui_workspace
+from baec_console import research_overview, ui_pages, ui_workspace
 from baec_console.public_runtime import PublicRuntime, new_public_runtime
 from baec_console.styles import CSS
 from baec_console.ui_common import PUBLIC_READ_ONLY_KEY, go, html
@@ -19,6 +19,7 @@ from baec_console.ui_common import PUBLIC_READ_ONLY_KEY, go, html
 
 RUNTIME_KEY = "_baec_public_runtime"
 PAGES = (
+    "Research Overview",
     "Dashboard",
     "Accounts",
     "Review Queue",
@@ -33,9 +34,9 @@ def _runtime() -> PublicRuntime:
     if runtime is None:
         runtime = new_public_runtime()
         st.session_state[RUNTIME_KEY] = runtime
-        go("Workspace", runtime.account_id, "Remember")
+        go("Research Overview")
     elif "page" not in st.session_state:
-        go("Workspace", runtime.account_id, "Remember")
+        go("Research Overview")
 
     return runtime
 
@@ -139,7 +140,9 @@ def main() -> None:
 
     st.query_params.clear()
 
-    if page == "Accounts":
+    if page == "Research Overview":
+        research_overview.render(console, runtime.account_id)
+    elif page == "Accounts":
         ui_pages.accounts(console)
     elif page == "Review Queue":
         ui_pages.review_queue(console)
