@@ -15,7 +15,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from baec_app.domain.enums import ArticulationOrigin, BaecCriterion, CriterionFinding, ElicitationMode, ThresholdComparator
+from baec_app.domain.enums import (
+    AccountState,
+    ArticulationOrigin,
+    BaecCriterion,
+    CriterionFinding,
+    ElicitationMode,
+    ReviewAnswer,
+    ThresholdComparator,
+)
 from baec_app.engine2.domain import CorrespondenceDimension, DimensionFinding, SufficiencyFinding
 from baec_app.engine2.measurement import Transformation
 from baec_app.engine3.enums import HumanReviewDecision, PreparationChannel, PreparationGoal
@@ -34,8 +42,14 @@ BUYER_STATEMENT = ("If Cobalt raises the price of our imaging service contract b
                    "we would put the contract out for review.")
 SELLER_NOTES = ("Asked what would make it worth revisiting the imaging service contract. The team is not looking at "
                 "other imaging service providers right now; the current Cobalt contract runs to the July renewal.")
-NOTICE = ("Renewal notice for contract AR-2207: from 1 July 2027 the annual imaging service fee changes from "
-          "USD 40,000 to USD 43,600.")
+INITIAL_NOTICE = (
+    "Renewal notice for contract AR-2207: from 1 July 2027 the annual imaging service fee changes from "
+    "USD 40,000 to USD 44,800."
+)
+CORRECTED_NOTICE = (
+    "Correction to renewal notice for contract AR-2207: the previously reported amount was incorrect. "
+    "From 1 July 2027 the annual imaging service fee changes from USD 40,000 to USD 43,600."
+)
 PARAPHRASE = "a price increase above 8% around the July renewal could make it worth revisiting the contract"
 
 
@@ -107,6 +121,23 @@ def _complete(service, clock: ScriptedClock, account_id: str, interaction_id: st
     preview = service.preview_condition(draft_id)
     baec_id = service.confirm_condition(draft_id, displayed_fingerprint=preview["fingerprint"], actor=SEED_ACTOR)
 
+    clock.at = _at(9, 4, 15, 50)
+    judgment_id = service.record_dormancy_judgment(
+        baec_id,
+        plausibility=ReviewAnswer.YES,
+        addressability=ReviewAnswer.YES,
+        notes="Synthetic demo: human judged the buyer-defined condition plausible and addressable.",
+        actor=SEED_ACTOR,
+    )
+
+    clock.at = _at(9, 4, 15, 55)
+    service.change_account_state(
+        account_id,
+        AccountState.CONDITIONALLY_DORMANT,
+        {"baec_id": baec_id, "judgment_id": judgment_id},
+        actor=SEED_ACTOR,
+    )
+
     clock.at = _at(9, 4, 16, 0)
     service.start_monitoring(
         account_id, baec_id, target_entities=(f"{SUPPLIER} (synthetic)", f"{ACCOUNT} (synthetic)"),
@@ -117,13 +148,35 @@ def _complete(service, clock: ScriptedClock, account_id: str, interaction_id: st
                             "Notice text and dates"),),
         actor=SEED_ACTOR)
 
-    clock.at = _at(10, 12, 11, 0)
     source_id = next(iter(service.account_view(account_id).sources))
+
+    clock.at = _at(10, 12, 10, 45)
+    initial = service.add_observation(baec_id, ObservationForm(
+        source_id=source_id,
+        observed_at=_at(10, 12, 10, 30),
+        content=INITIAL_NOTICE,
+        effective_at=datetime(2027, 7, 1, tzinfo=timezone.utc),
+        source_locator="Forwarded renewal notice, 12 October 2026",
+        transformation=Transformation.PERCENT_CHANGE_FROM_TWO_PRICES.value,
+        baseline_value="40000",
+        new_value="44800",
+        value_unit="USD per year",
+        flag_for_review=False,
+    ), actor=SEED_ACTOR)
+
+    clock.at = _at(10, 12, 11, 0)
     result = service.add_observation(baec_id, ObservationForm(
-        source_id=source_id, observed_at=_at(10, 12, 10, 30), content=NOTICE,
-        effective_at=datetime(2027, 7, 1, tzinfo=timezone.utc), source_locator="Forwarded email, 12 October 2026",
-        transformation=Transformation.PERCENT_CHANGE_FROM_TWO_PRICES.value, baseline_value="40000",
-        new_value="43600", value_unit="USD per year"), actor=SEED_ACTOR)
+        source_id=source_id,
+        observed_at=_at(10, 12, 10, 50),
+        content=CORRECTED_NOTICE,
+        effective_at=datetime(2027, 7, 1, tzinfo=timezone.utc),
+        source_locator="Forwarded correction, 12 October 2026",
+        corrects_observation_id=initial.observation_id,
+        transformation=Transformation.PERCENT_CHANGE_FROM_TWO_PRICES.value,
+        baseline_value="40000",
+        new_value="43600",
+        value_unit="USD per year",
+    ), actor=SEED_ACTOR)
 
     clock.at = _at(10, 15, 9, 30)
     packet = service.review_packet(result.candidate_id)
