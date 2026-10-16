@@ -31,6 +31,8 @@ Verified correspondence can justify preparation for a human conversation. It doe
 
 [Launch the Engine 3 Demo](https://baec-engine3.streamlit.app)
 
+Full Engine 3 research and development materials are available in the repository under docs/engine3/.
+
 ## Research status
 
 Engine 3 Version 1.0 is a research prototype using synthetic data.
