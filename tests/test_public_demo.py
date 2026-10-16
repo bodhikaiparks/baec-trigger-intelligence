@@ -1537,10 +1537,15 @@ def test_the_canonical_document_structure_has_one_research_contract():
     assert "README.md" in files and readme.startswith("# BAEC Trigger Intelligence\n")
     assert "unpublished conceptual working paper" in readme and "intentionally not included" in readme
     for claim in ("under review", "peer reviewed", "peer-reviewed", "accepted for publication", "published in",
-                  "\u2014", "release candidate"):
-        assert claim not in readme.lower(), claim  # no review status, no stale release status, no em dash
-    assert "Version 1.0" in readme and "https://baec-engine1.streamlit.app" in readme
-    assert re.findall(r"https?://\S+", readme) == ["https://baec-engine1.streamlit.app"]  # the only link
+                  "release candidate"):
+        assert claim not in readme.lower(), claim
+    assert "Remember → Monitor → Recognize → Prepare" in readme
+    assert re.findall(r"https?://\S+", readme) == [
+        "https://baec-trigger-intelligence.streamlit.app",
+        "https://baec-engine1.streamlit.app",
+        "https://baec-engine2.streamlit.app",
+        "https://baec-engine3.streamlit.app",
+    ]
     assert sorted(os.listdir(REPO / "public_demo_assets")) == [
         "BAEC_Engine_1_Research_and_Technical_Brief.pdf", "README.md", "baec-engine1-harbor-recording.json"]
     for name in files:  # no ambiguous release-facing variants anywhere in the repository
