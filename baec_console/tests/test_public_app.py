@@ -14,6 +14,12 @@ def _button(at: AppTest, label: str):
     return matches[0]
 
 
+def _download_button(at: AppTest, label: str):
+    matches = [b for b in at.download_button if b.label == label]
+    assert matches, label
+    return matches[0]
+
+
 def test_public_console_exposes_full_navigation_and_workspace():
     at = AppTest.from_file(APP, default_timeout=30)
     at.run()
@@ -23,6 +29,13 @@ def test_public_console_exposes_full_navigation_and_workspace():
     assert _button(at, "Research Overview").disabled is False
     assert _button(at, "Accounts").disabled is False
     assert "When the Buyer Is Not In-Market" in " ".join(m.value for m in at.markdown)
+    assert (
+        _download_button(
+            at,
+            "Download System Research & Technical Overview",
+        ).disabled
+        is False
+    )
 
     _button(at, "Open full system walkthrough").click().run()
     assert not at.exception

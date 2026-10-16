@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from .console_service import STATE_LABELS
@@ -192,6 +194,22 @@ def render(console, account_id: str) -> None:
     ):
         go("Workspace", account_id, "Remember")
         st.rerun()
+
+    system_overview_pdf = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "baec-system"
+        / "BAEC_System_Research_and_Technical_Overview.pdf"
+    )
+
+    st.download_button(
+        "Download System Research & Technical Overview",
+        data=system_overview_pdf.read_bytes(),
+        file_name="BAEC_System_Research_and_Technical_Overview.pdf",
+        mime="application/pdf",
+        key="overview-system-pdf",
+        use_container_width=True,
+    )
 
     html('<div class="bc-h" style="margin-top:24px">Individual engine releases</div>')
 
