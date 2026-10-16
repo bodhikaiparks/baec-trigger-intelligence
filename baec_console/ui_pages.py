@@ -7,7 +7,7 @@ import streamlit as st
 from baec_app.domain.enums import BaecClassification
 
 from .console_service import STATE_LABELS, AccountView, Console
-from .ui_common import STAGE_LABELS, attempt, e, go, heading, html, notice, show_flash, when
+from .ui_common import STAGE_LABELS, attempt, e, go, heading, html, notice, public_read_only, show_flash, when, write_disabled, write_label
 from .ui_workspace import timeline
 
 SECTION_FOR_QUEUE = {"REMEMBER": "Remember", "RECOGNIZE": "Recognize", "PREPARE": "Prepare"}
@@ -34,9 +34,22 @@ def _name(view: AccountView) -> str:
 
 def _open_on_select(event, ids: list[str], key: str, sections: list[str | None] | None = None,
                     focus: list[str | None] | None = None) -> None:
-    rows = event.selection.rows if event and event.selection else []
+    if not event or not event.selection:
+        return
+
+    rows = list(getattr(event.selection, "rows", []) or [])
+
+    if not rows:
+        cells = list(getattr(event.selection, "cells", []) or [])
+        if cells:
+            cell = cells[0]
+            if isinstance(cell, (list, tuple)):
+                rows = [cell[0]]
+            elif isinstance(cell, dict) and "row" in cell:
+                rows = [cell["row"]]
+
     if rows:
-        i = rows[0]
+        i = int(rows[0])
         go("Workspace", ids[i], (sections or [None] * len(ids))[i], (focus or [None] * len(ids))[i])
         st.session_state.pop(key, None)
         st.rerun()
@@ -78,7 +91,7 @@ def dashboard(console: Console) -> None:
              "Next action": v.next_action} for v in views]
     html('<div class="bc-h">Accounts in motion</div>')
     event = st.dataframe(rows, hide_index=True, on_select="rerun",
-                         selection_mode="single-row", key="dash-table",
+                         selection_mode="single-cell", key="dash-table",
                          column_config={"Condition": st.column_config.TextColumn(width="medium"),
                                         "Next action": st.column_config.TextColumn(width="medium")})
     st.caption("Select a row to open the account workspace.")
@@ -88,19 +101,34 @@ def dashboard(console: Console) -> None:
 def accounts(console: Console) -> None:
     heading("Accounts", "Accounts", "Every account you track, with its account state and where it is in the workflow.")
     show_flash()
-    with st.expander("Add account", expanded=st.session_state.pop("open_add", False)):
-        with st.form("add-account", clear_on_submit=True):
-            name = st.text_input("Account name")
-            industry = st.text_input("Industry (optional)")
-            note = st.text_input("Owner or note (optional)")
-            st.caption("Creating an account records nothing about the buyer. Its account state starts unclassified.")
-            if st.form_submit_button("Add account", type="primary"):
-                account_id = attempt(lambda: console.local.create_account(name, industry=industry, owner_note=note,
-                                                                          actor=console.actor),
-                                     success="Account added.")
-                if account_id:
-                    go("Workspace", account_id, "Remember")
-                    st.rerun()
+    add_key = "show-add-account"
+    if st.session_state.pop("open_add", False):
+        st.session_state[add_key] = True
+
+    add_open = st.session_state.get(add_key, False)
+
+    if st.button(
+        "Close add account" if add_open else "+ Add account",
+        key="toggle-add-account",
+        use_container_width=True,
+    ):
+        st.session_state[add_key] = not add_open
+        st.rerun()
+
+    if st.session_state.get(add_key, False):
+        with st.container(border=True):
+            with st.form("add-account", clear_on_submit=True):
+                name = st.text_input("Account name")
+                industry = st.text_input("Industry (optional)")
+                note = st.text_input("Owner or note (optional)")
+                st.caption("Creating an account records nothing about the buyer. Its account state starts unclassified.")
+                if st.form_submit_button(write_label("Add account"), type="primary", disabled=write_disabled()):
+                    account_id = attempt(lambda: console.local.create_account(name, industry=industry, owner_note=note,
+                                                                              actor=console.actor),
+                                         success="Account added.")
+                    if account_id:
+                        go("Workspace", account_id, "Remember")
+                        st.rerun()
     views = console.account_views()
     query = st.text_input("Search accounts", placeholder="Search by name, industry, or condition",
                           label_visibility="collapsed")
@@ -115,7 +143,7 @@ def accounts(console: Console) -> None:
              "Workflow stage": STAGE_LABELS.get(v.stage, v.stage), "Last activity": when(v.last_activity)}
             for v in views]
     event = st.dataframe(rows, hide_index=True, on_select="rerun",
-                         selection_mode="single-row", key="acct-table")
+                         selection_mode="single-cell", key="acct-table")
     _open_on_select(event, [v.account.account_id for v in views], "acct-table")
 
 
@@ -135,7 +163,7 @@ def review_queue(console: Console) -> None:
                   "Created": when(r["created"]), "Evidence / condition": r["summary"], "Status": r["status"]}
                  for r in rows]
         event = st.dataframe(table, hide_index=True, on_select="rerun",
-                             selection_mode="single-row", key=key,
+                             selection_mode="single-cell", key=key,
                              column_config={"Evidence / condition": st.column_config.TextColumn(width="large")})
         _open_on_select(event, [r["account_id"] for r in rows], key,
                         [SECTION_FOR_QUEUE[r["stage"]] for r in rows], [r["ref"] for r in rows])
@@ -165,7 +193,7 @@ def preparation(console: Console) -> None:
                           "Review status": f"{status} · {decided} reviewed · {passed} of {len(outputs)} passed Engine 3"})
         key = f"prep-{status}"
         event = st.dataframe(table, hide_index=True, on_select="rerun",
-                             selection_mode="single-row", key=key)
+                             selection_mode="single-cell", key=key)
         _open_on_select(event, [p["request"]["account_id"] for p in rows], key, ["Prepare"] * len(rows),
                         [p["preparation"]["preparation_id"] for p in rows])
 

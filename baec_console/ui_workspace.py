@@ -49,7 +49,7 @@ from . import engine2_adapter as e2a
 from . import engine3_adapter as e3a
 from .console_service import ATTESTATIONS, STATE_LABELS, AccountView, Console, ConsoleService
 from .console_store import ORIGIN_COMPATIBILITY_TEXT
-from .ui_common import STAGE_LABELS, attempt, badge, boundary, e, flow, html, notice, show_flash, technical, when
+from .ui_common import STAGE_LABELS, attempt, badge, boundary, e, flow, html, notice, public_read_only, show_flash, technical, when, write_disabled, write_label
 
 SECTIONS = ("Remember", "Monitor", "Recognize", "Prepare", "Timeline", "Account state")
 SECTION_FOR_STAGE = {"REMEMBER": "Remember", "MONITOR": "Monitor", "RECOGNIZE": "Recognize", "PREPARE": "Prepare",
@@ -137,22 +137,34 @@ def _remember(service: ConsoleService, view: AccountView, actor: str) -> None:
              f'{e(meta.get("buyer_statement", interaction.text))}</div>'
              + (f'<div class="bc-muted">Seller notes: {e(meta["seller_notes"])}</div>' if meta.get("seller_notes")
                 else "") + "</div>")
-    with st.expander("Add buyer interaction", expanded=not view.interactions):
-        with st.form(f"interaction-{view.account.account_id}", clear_on_submit=True):
-            role = st.text_input("Buyer role", placeholder="e.g. Director of Operations")
-            c1, c2 = st.columns(2)
-            day = c1.date_input("Interaction date", value=datetime.now().date())
-            at = c2.time_input("Time", value=time(9, 0))
-            statement = st.text_area("Exact buyer statement",
-                                     help="The buyer's own words, exactly as said. This text is never altered.")
-            notes = st.text_area("Seller notes / interaction context (optional)")
-            if st.form_submit_button("Record interaction", type="primary"):
-                occurred = datetime.combine(day, at).astimezone(timezone.utc)
-                if attempt(lambda: service.record_interaction(view.account.account_id, buyer_role=role,
-                                                              occurred_at=occurred, buyer_statement=statement,
-                                                              seller_notes=notes, actor=actor),
-                           success="Buyer interaction recorded."):
-                    st.rerun()
+    interaction_key = f"show-add-interaction-{view.account.account_id}"
+    interaction_open = st.session_state.get(interaction_key, False)
+
+    if st.button(
+        "Close add buyer interaction" if interaction_open else "+ Add buyer interaction",
+        key=f"toggle-interaction-{view.account.account_id}",
+        use_container_width=True,
+    ):
+        st.session_state[interaction_key] = not interaction_open
+        st.rerun()
+
+    if st.session_state.get(interaction_key, False):
+        with st.container(border=True):
+            with st.form(f"interaction-{view.account.account_id}", clear_on_submit=True):
+                role = st.text_input("Buyer role", placeholder="e.g. Director of Operations")
+                c1, c2 = st.columns(2)
+                day = c1.date_input("Interaction date", value=datetime.now().date())
+                at = c2.time_input("Time", value=time(9, 0))
+                statement = st.text_area("Exact buyer statement",
+                                         help="The buyer's own words, exactly as said. This text is never altered.")
+                notes = st.text_area("Seller notes / interaction context (optional)")
+                if st.form_submit_button(write_label("Record interaction"), type="primary", disabled=write_disabled()):
+                    occurred = datetime.combine(day, at).astimezone(timezone.utc)
+                    if attempt(lambda: service.record_interaction(view.account.account_id, buyer_role=role,
+                                                                  occurred_at=occurred, buyer_statement=statement,
+                                                                  seller_notes=notes, actor=actor),
+                               success="Buyer interaction recorded."):
+                        st.rerun()
     if not view.interactions:
         return
 
@@ -161,9 +173,20 @@ def _remember(service: ConsoleService, view: AccountView, actor: str) -> None:
         _baec_card(record)
     for draft in view.pending_drafts:
         _draft_card(service, view, draft, actor)
-    with st.expander("Capture a buyer-articulated condition", expanded=view.current_baec is None
-                     and not view.pending_drafts):
-        _capture_form(service, view, actor)
+    capture_key = f"show-capture-condition-{view.account.account_id}"
+    capture_open = st.session_state.get(capture_key, False)
+
+    if st.button(
+        "Close condition capture" if capture_open else "+ Capture buyer-articulated condition",
+        key=f"toggle-condition-{view.account.account_id}",
+        use_container_width=True,
+    ):
+        st.session_state[capture_key] = not capture_open
+        st.rerun()
+
+    if st.session_state.get(capture_key, False):
+        with st.container(border=True):
+            _capture_form(service, view, actor)
 
 
 def _baec_card(record) -> None:
@@ -212,7 +235,7 @@ def _draft_card(service: ConsoleService, view: AccountView, draft: dict, actor: 
             if c1.button("Preview condition", key=f"pv-{draft['draft_id']}", type="primary"):
                 st.session_state[key] = True
                 st.rerun()
-            if c2.button("Discard", key=f"dc-{draft['draft_id']}"):
+            if c2.button(write_label("Discard"), key=f"dc-{draft['draft_id']}", disabled=write_disabled()):
                 if attempt(lambda: service.discard_draft(draft["draft_id"], actor=actor), success="Draft discarded."):
                     st.rerun()
             return
@@ -230,7 +253,7 @@ def _draft_card(service: ConsoleService, view: AccountView, draft: dict, actor: 
             notice("Engine 1: meets all four criteria",
                    "Engine 1 classifies this as a confirmable buyer-articulated condition. It is not recorded until "
                    "you confirm it.", "ok")
-            if st.button("Confirm buyer-articulated condition", type="primary", key=f"cf-{draft['draft_id']}"):
+            if st.button(write_label("Confirm buyer-articulated condition"), type="primary", key=f"cf-{draft['draft_id']}", disabled=write_disabled()):
                 if attempt(lambda: service.confirm_condition(draft["draft_id"],
                                                              displayed_fingerprint=preview["fingerprint"], actor=actor),
                            success="Buyer-articulated condition confirmed. It can now be monitored."):
@@ -240,7 +263,7 @@ def _draft_card(service: ConsoleService, view: AccountView, draft: dict, actor: 
             notice(f"Engine 1: {result.result.classification.value.replace('_', ' ').title()}",
                    result.result.reason_text or "", "warn")
             boundary("It cannot be confirmed or monitored. You can preserve the classification with its reason.")
-            if st.button("Record as not a confirmed BAEC", key=f"nc-{draft['draft_id']}"):
+            if st.button(write_label("Record as not a confirmed BAEC"), key=f"nc-{draft['draft_id']}", disabled=write_disabled()):
                 if attempt(lambda: service.record_not_confirmable(draft["draft_id"],
                                                                   displayed_fingerprint=preview["fingerprint"],
                                                                   actor=actor),
@@ -291,7 +314,7 @@ def _capture_form(service: ConsoleService, view: AccountView, actor: str) -> Non
         timing = c1.text_input("Timing wording", placeholder="e.g. at the July renewal")
         recurrence = c2.text_input("Recurrence wording (optional)")
         qualitative = c3.text_input("Qualitative term (optional)", placeholder="e.g. significant")
-        if st.form_submit_button("Capture condition", type="primary"):
+        if st.form_submit_button(write_label("Capture condition"), type="primary", disabled=write_disabled()):
             form = e1a.ConditionForm(
                 criteria=criteria, origin=origin.value, elicitation=elicitation.value, threshold_text=threshold_text,
                 comparator=comparator.value if comparator else "", threshold_value=value, threshold_unit=unit,
@@ -365,7 +388,7 @@ def _start_monitoring(service: ConsoleService, view: AccountView, actor: str) ->
         limits = c2.text_input("Known limitations (optional)")
         boundary("You are authorizing this monitoring plan. Monitoring is limited to legitimate business data from "
                  "the sources you authorize.")
-        if st.form_submit_button("Start monitoring", type="primary"):
+        if st.form_submit_button(write_label("Start monitoring"), type="primary", disabled=write_disabled()):
             missing = [n for n, v in (("source type", source_type), ("owner or publisher", owner),
                                       ("legitimate basis", basis), ("access method", access),
                                       ("what may be captured", capture)) if not v.strip()]
@@ -423,7 +446,7 @@ def _observation_form(service: ConsoleService, view: AccountView, actor: str) ->
         retraction = st.checkbox("It retracts the earlier observation rather than correcting it")
         flag = st.checkbox("Queue for correspondence review", value=True,
                            help="A human then decides whether it corresponds to the buyer's condition.")
-        if st.form_submit_button("Add observation", type="primary"):
+        if st.form_submit_button(write_label("Add observation"), type="primary", disabled=write_disabled()):
             form = e2a.ObservationForm(
                 source_id=source_id, observed_at=datetime.combine(observed, time(12, 0)).astimezone(timezone.utc),
                 content=content, provenance=provenance.value,
@@ -543,11 +566,11 @@ def _review_form(service: ConsoleService, view: AccountView, candidate, actor: s
             check_notes=checks, actor=actor)
 
     c1, c2, c3 = st.columns([1.3, 1.3, 2])
-    if c1.button("Verify correspondence", type="primary", disabled=not verifies, key=f"{key}-verify"):
+    if c1.button(write_label("Verify correspondence"), type="primary", disabled=write_disabled(not verifies), key=f"{key}-verify"):
         if attempt(lambda: submit(answers, sufficiency), success="Review recorded."):
             st.session_state.pop(f"again-{key}", None)
             st.rerun()
-    if c2.button("Not enough evidence", disabled=verifies, key=f"{key}-insufficient"):
+    if c2.button(write_label("Not enough evidence"), disabled=write_disabled(verifies), key=f"{key}-insufficient"):
         filled = {d: (v if v is not None else DimensionFinding.UNRESOLVED) for d, v in answers.items()}
         if attempt(lambda: submit(filled, sufficiency or SufficiencyFinding.NO), success="Review recorded."):
             st.session_state.pop(f"again-{key}", None)
@@ -614,7 +637,7 @@ def _prepare(service: ConsoleService, view: AccountView, actor: str) -> None:
     elif preparation is None:
         notice("Preparation requested", f"Requested by {request['requested_by']} on {when(request['requested_at'])} "
                "from this correspondence. This authorizes drafting only.", "")
-        if st.button("Prepare drafts", type="primary", key=f"gen-{request['request_id']}"):
+        if st.button(write_label("Prepare drafts"), type="primary", key=f"gen-{request['request_id']}", disabled=write_disabled()):
             if attempt(lambda: service.generate_preparation(request["request_id"], actor="Deterministic preparation"),
                        success="Drafts prepared and checked by Engine 3.", failure="Engine 3 refused preparation."):
                 st.rerun()
@@ -647,7 +670,7 @@ def _block_controls(service: ConsoleService, review, selected: dict, actor: str)
                "blocked.", "stop")
         with st.expander("Lift the block"):
             reason = st.text_input("Why the block is being lifted (optional)", key=f"unblock-r-{rid}")
-            if st.button("Lift block", key=f"unblock-{rid}"):
+            if st.button(write_label("Lift block"), key=f"unblock-{rid}", disabled=write_disabled()):
                 if attempt(lambda: service.unblock_preparation(rid, reason=reason, actor=actor),
                            success="Block lifted. The earlier decision stays on record."):
                     st.rerun()
@@ -656,7 +679,7 @@ def _block_controls(service: ConsoleService, review, selected: dict, actor: str)
         boundary("Use this when re-engagement would be inappropriate, for example because of the buyer's "
                  "circumstances. It is recorded with your name and can be lifted later by a new decision.")
         reason = st.text_input("Reason (optional)", key=f"block-r-{rid}")
-        if st.button("Block preparation", key=f"block-{rid}"):
+        if st.button(write_label("Block preparation"), key=f"block-{rid}", disabled=write_disabled()):
             if attempt(lambda: service.block_preparation(rid, reason=reason, actor=actor),
                        success="Preparation is blocked by human decision."):
                 st.rerun()
@@ -702,7 +725,7 @@ def _request_form(service: ConsoleService, view: AccountView, review, snap: dict
                 reviewed = st.checkbox("I have reviewed that context", key=f"ar{key}-{row['id']}") if related else False
                 adversity[row["id"]] = {"related": related, "reviewed": reviewed}
         boundary("A Preparation Request authorizes drafting only. It is never outreach authorization.")
-        if st.form_submit_button("Prepare from this correspondence", type="primary"):
+        if st.form_submit_button(write_label("Prepare from this correspondence"), type="primary", disabled=write_disabled()):
             request = {"channel": channel.value, "goal": goal.value, "statement_use": use, "paraphrase": paraphrase,
                        "dispositions": dispositions, "source_identity": identities, "adversity": adversity}
             if attempt(lambda: service.request_preparation(review.review_id, request, actor=actor),
@@ -799,7 +822,7 @@ def _review_controls(service: ConsoleService, pid: str, artifact: dict, report: 
     if report["allowed"]:
         attest = {k: st.checkbox(label, key=f"{key}-{k}") for k, label in ATTESTATIONS}
         c1, c2, c3 = st.columns(3)
-        if c1.button("Accept as drafted", type="primary", key=f"{key}-accept"):
+        if c1.button(write_label("Accept as drafted"), type="primary", key=f"{key}-accept", disabled=write_disabled()):
             if attempt(lambda: service.review_artifact(pid, aid, HumanReviewDecision.ACCEPT_AS_DRAFTED,
                                                        attestations=attest, actor=actor),
                        success="Prepared for human use."):
@@ -812,7 +835,7 @@ def _review_controls(service: ConsoleService, pid: str, artifact: dict, report: 
     with c3:
         reason = st.text_input("Reason for rejecting (optional)", key=f"{key}-reason", label_visibility="collapsed",
                                placeholder="Reason for rejecting (optional)")
-        if st.button("Reject", key=f"{key}-reject"):
+        if st.button(write_label("Reject"), key=f"{key}-reject", disabled=write_disabled()):
             if attempt(lambda: service.review_artifact(pid, aid, HumanReviewDecision.REJECT, attestations={},
                                                        reason=reason, actor=actor), success="Draft rejected."):
                 st.rerun()
@@ -847,7 +870,7 @@ def _edit_controls(service: ConsoleService, pid: str, artifact: dict, preparatio
                 reference_use_mode=ReferenceUseMode.PARAPHRASE if cited else ReferenceUseMode.DIRECT,
                 claim_field=ClaimField.OTHER if kind == "FACT" else ClaimField.NONE)))
     c1, c2 = st.columns(2)
-    if c1.button("Validate edit", type="primary", key=f"{key}-validate"):
+    if c1.button(write_label("Validate edit"), type="primary", key=f"{key}-validate", disabled=write_disabled()):
         result = attempt(lambda: service.edit_artifact(pid, aid, segments, actor=actor))
         if result:
             st.session_state[f"edit-{key}"] = result["edit_id"]
@@ -867,7 +890,7 @@ def _edit_controls(service: ConsoleService, pid: str, artifact: dict, preparatio
         return
     notice("Your edit passed Engine 3 validation", kind="ok")
     attest = {k: st.checkbox(label, key=f"{key}-e-{k}") for k, label in ATTESTATIONS}
-    if st.button("Accept edited version", type="primary", key=f"{key}-accept-edit"):
+    if st.button(write_label("Accept edited version"), type="primary", key=f"{key}-accept-edit", disabled=write_disabled()):
         if attempt(lambda: service.review_artifact(pid, aid, HumanReviewDecision.EDIT, attestations=attest,
                                                    edit_id=edit_id, actor=actor), success="Prepared for human use."):
             st.session_state.pop(f"mode-{key}", None)
@@ -894,7 +917,7 @@ def _account_state(service: ConsoleService, view: AccountView, actor: str) -> No
                 addr = st.radio("Could we credibly respond if it occurred?", answers, index=3, horizontal=True,
                                 format_func=e1a.REVIEW_ANSWER_LABELS.get)
                 notes = st.text_input("Notes (optional)")
-                if st.form_submit_button("Record judgment", type="primary"):
+                if st.form_submit_button(write_label("Record judgment"), type="primary", disabled=write_disabled()):
                     if attempt(lambda: service.record_dormancy_judgment(confirmed[-1].baec_id, plausibility=plaus,
                                                                         addressability=addr, notes=notes, actor=actor),
                                success="Dormancy judgment recorded."):
@@ -934,7 +957,7 @@ def _account_state(service: ConsoleService, view: AccountView, actor: str) -> No
         notice("Engine 1 would refuse this change", " ".join(blockers), "stop")
         return
     notice("Engine 1 would allow this change", "It is recorded only when you confirm it.", "ok")
-    if st.button(f"Confirm: move to {STATE_LABELS[target]}", type="primary"):
+    if st.button(write_label(f"Confirm: move to {STATE_LABELS[target]}"), type="primary", disabled=write_disabled()):
         if attempt(lambda: service.change_account_state(view.account.account_id, target, inputs, actor=actor),
                    success=f"Account state changed to {STATE_LABELS[target]}."):
             st.rerun()

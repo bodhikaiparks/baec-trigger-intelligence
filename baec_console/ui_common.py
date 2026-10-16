@@ -28,6 +28,21 @@ STAGE_LABELS = {"REMEMBER": "Remember", "MONITOR": "Monitor", "RECOGNIZE": "Reco
                 "PREPARED": "Prepared", "ACCOUNT": "Account"}
 
 
+PUBLIC_READ_ONLY_KEY = "_baec_public_read_only"
+
+
+def public_read_only() -> bool:
+    return bool(st.session_state.get(PUBLIC_READ_ONLY_KEY, False))
+
+
+def write_label(label: str) -> str:
+    return f"🔒 {label}" if public_read_only() else label
+
+
+def write_disabled(disabled: bool = False) -> bool:
+    return bool(disabled or public_read_only())
+
+
 def html(markup: str) -> None:
     st.markdown(markup, unsafe_allow_html=True)
 
